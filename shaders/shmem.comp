@@ -1,0 +1,207 @@
+/*
+ * Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+#version 450 core
+#pragma use_vulkan_memory_model
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_KHR_memory_scope_semantics : enable
+#extension GL_NV_cooperative_matrix : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_buffer_reference : enable
+#extension GL_EXT_control_flow_attributes : enable
+
+// M/N/K values filled out at pipeline creation time
+layout(constant_id = 0) const uint lM = 1;
+layout(constant_id = 1) const uint lN = 1;
+layout(constant_id = 2) const uint lK = 1;
+layout(constant_id = 3) const uint TILE_M = 1;
+layout(constant_id = 4) const uint TILE_N = 1;
+layout(constant_id = 5) const uint TILE_K = 1;
+layout(constant_id = 6) const uint K = 1;
+layout(constant_id = 7) const uint stride0 = 1;
+layout(constant_id = 8) const uint stride1 = 1;
+layout(constant_id = 9) const uint stride2 = 1;
+layout(constant_id = 10)const uint stride3 = 1;
+layout(constant_id = 11)const float alpha = 1.0;
+layout(constant_id = 12)const float beta = 1.0;
+
+// #defines set on command line:
+// PREC = 16 or 32 (bits per component)
+// C_TYPE = float or float16_t
+
+// input bindings for A/B/C and the output
+// bindings for A and B for uvec4/128-bit loads
+layout(buffer_reference) buffer InputAV4 { uvec4 x[]; } inputAV4;
+layout(buffer_reference) buffer InputBV4 { uvec4 x[]; } inputBV4;
+layout(buffer_reference) buffer InputC { C_TYPE x[]; } inputC;
+layout(buffer_reference) buffer Output { C_TYPE x[]; } outputO;
+layout(set=0, binding=0, std430) uniform Params { InputAV4 inputAV4; InputBV4 inputBV4; InputC inputC; Output outputO; } params;
+
+// Shared memory storage. Add a skew of 8/8=1 per row to avoid bank conflicts when accessing the shared memory
+shared uvec4 Ash[TILE_M * (TILE_K + 8) * 2/16];
+shared uvec4 Bsh[TILE_K * (TILE_N + 8) * 2/16];
+
+const uint WORKGROUP_WIDTH_IN_SUBGROUPS = 4;
+const uint WORKGROUP_HEIGHT_IN_SUBGROUPS = 2;
+const uint NUM_SUBGROUPS = WORKGROUP_WIDTH_IN_SUBGROUPS * WORKGROUP_HEIGHT_IN_SUBGROUPS;
+const uint INVOCATIONS_PER_WORKGROUP = 32 * NUM_SUBGROUPS;
+layout(local_size_x = INVOCATIONS_PER_WORKGROUP, local_size_y = 1, local_size_z = 1) in;
+const uint C_ROWS = TILE_M / WORKGROUP_HEIGHT_IN_SUBGROUPS / lM;
+const uint C_COLS = TILE_N / WORKGROUP_WIDTH_IN_SUBGROUPS / lN;
+fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> result[C_ROWS][C_COLS];
+
+void main()
+{
+    // compute position in grid
+    uvec2 tileID = uvec2(gl_WorkGroupID.xy);
+    uvec2 warpInTile = uvec2(gl_SubgroupID % WORKGROUP_WIDTH_IN_SUBGROUPS, gl_SubgroupID / WORKGROUP_WIDTH_IN_SUBGROUPS);
+
+    InputAV4 inputAV4 = params.inputAV4;
+    InputBV4 inputBV4 = params.inputBV4;
+    InputC inputC = params.inputC;
+    Output outputO = params.outputO;
+
+    // Initialize result to zero
+    [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
+        [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
+            result[i][j] = fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN>(0.0);
+        }
+    }
+
+    uint chunkK = 0;
+
+    const int ELEMENTS_PER_LOAD = 16/2; // 16 bytes, 2 bytes per element
+
+    // fetch A for the first iteration;
+    uint gi = TILE_M * tileID.y + (gl_LocalInvocationID.x % TILE_M);
+    const uint si = (gl_LocalInvocationID.x % TILE_M);
+    const uint A_K_INC = ELEMENTS_PER_LOAD * INVOCATIONS_PER_WORKGROUP / TILE_M;
+
+    uvec4 temp_A[TILE_K / A_K_INC];
+    [[unroll]] for (uint k = 0; k < TILE_K; k += A_K_INC) {
+        uint gk = chunkK + k + ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x / TILE_M);
+        temp_A[k / A_K_INC] = inputAV4.x[(stride0 * gi + gk)/8];
+    }
+
+    // fetch B for the first iteration
+    const uint INVS_PER_ROW = TILE_N/ELEMENTS_PER_LOAD;
+    uint gj = TILE_N * tileID.x + ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x % INVS_PER_ROW);
+    uint sj = ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x % INVS_PER_ROW);
+
+    uvec4 temp_B[TILE_K / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)];
+    [[unroll]] for (uint k = 0; k < TILE_K; k += INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW) {
+        uint gk = chunkK + k + gl_LocalInvocationID.x / INVS_PER_ROW;
+        temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)] = inputBV4.x[(stride1 * gk + gj)/ELEMENTS_PER_LOAD];
+    }
+
+    // Iterate over K.
+    // On each iteration, the workgroup cooperates to memcpy a row of cooperative
+    // matrices from matrix A into Ash and a column of cooperative matrices from
+    // matrix B into Bsh. Then each subgroup loads the subset of those matrices
+    // that it needs out of shared memory, and multiplies pairs of cooperative
+    // matrices.
+    for (uint chunkK = 0; chunkK < K; chunkK += TILE_K) {
+        bool last = ((chunkK + TILE_K) >= K);
+
+        uint gi = TILE_M * tileID.y + (gl_LocalInvocationID.x % TILE_M);
+        uint si = (gl_LocalInvocationID.x % TILE_M);
+
+        const uint STRIDE_A_SH = (TILE_K + 8);
+
+        // ensure that all threads in the subgroup finished reading from SMEM during the last iteration
+        barrier();
+
+        // store A from local storage to shared memory
+        [[unroll]] for (uint k = 0; k < TILE_K; k += A_K_INC) {
+            uint sk = k + ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x / TILE_M);
+            Ash[(STRIDE_A_SH * si + sk) / 8] = temp_A[k / A_K_INC];
+        }
+
+        const uint STRIDE_B_SH = (TILE_N + 8);
+
+        // store B from local storage to shared memory
+        [[unroll]] for (uint k = 0; k < TILE_K; k += INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW) {
+            uint sk = k + gl_LocalInvocationID.x / INVS_PER_ROW;
+            Bsh[(STRIDE_B_SH * sk + sj) / 8] = temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)];
+        }
+
+        // wait until all threads finished writing to shared memory before the math loop
+        // Do this before fetching data for the next iteration so that the barrier does not
+        // wait for the loads from global storage to be finished
+        barrier();
+
+        // we prefetch data from global memory as soon as possible to hide memory transfers
+        // behind math
+        // prefetch A
+        [[unroll]] for (uint k = 0; k < TILE_K; k += ELEMENTS_PER_LOAD * INVOCATIONS_PER_WORKGROUP/TILE_M) {
+            uint gk = (chunkK + TILE_K) + k + ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x / TILE_M);
+            if (!last) temp_A[k / A_K_INC] = inputAV4.x[(stride0 * gi + gk)/8];
+        }
+
+        // prefetch B
+        uint gj = TILE_N * tileID.x + 16/2*(gl_LocalInvocationID.x % INVS_PER_ROW);
+        uint sj = 16/2*(gl_LocalInvocationID.x % INVS_PER_ROW);
+        [[unroll]] for (uint k = 0; k < TILE_K; k += INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW) {
+            uint gk = (chunkK + TILE_K) + k + gl_LocalInvocationID.x / INVS_PER_ROW;
+            if (!last) temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)] = inputBV4.x[(stride1 * gk + gj)/8];
+        }
+
+        // The actual math loop
+        [[unroll]] for (uint k = 0; k < TILE_K / lK; ++k)
+        {
+            uint sk = lK * k;
+
+            // load A. A will be reused C_COLS times
+            fcoopmatNV<16, gl_ScopeSubgroup, lM, lK> matA[C_ROWS];
+            [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
+                uint si = lM * (C_ROWS * warpInTile.y + i);
+                coopMatLoadNV(matA[i], Ash, ((TILE_K + 8) * si + sk)/8, TILE_K/8+1, false);
+            }
+
+            fcoopmatNV<16, gl_ScopeSubgroup, lK, lN> matB;
+            [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
+                uint sj = lN * (C_COLS * warpInTile.x + j);
+                // load B
+                coopMatLoadNV(matB, Bsh, ((TILE_N + 8) * sk + sj)/8, TILE_N/8+1, false);
+
+                // do the matrix multiply for the current portion of the tile
+                [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
+                    result[i][j] = coopMatMulAddNV(matA[i], matB, result[i][j]);
+                }
+            }
+        }
+    }
+
+    [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
+        [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
+            uint gi = TILE_M * tileID.y + lM * (C_ROWS * warpInTile.y + i);
+            uint gj = TILE_N * tileID.x + lN * (C_COLS * warpInTile.x + j);
+
+            // fetch and add C matrix
+            fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> matC;
+            coopMatLoadNV(matC, inputC.x, stride2 * gi + gj, stride2, false);
+
+            result[i][j] = C_TYPE(alpha) * result[i][j] + C_TYPE(beta) * matC;
+            coopMatStoreNV(result[i][j], outputO.x, stride3 * gi + gj, stride3, false);
+        }
+    }
+}
