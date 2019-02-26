@@ -270,8 +270,8 @@ void createMatrixDesc(VkDevice device, VkPhysicalDeviceMemoryProperties &memoryP
         NULL,
         0,
         m.bufferSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_SHARING_MODE_CONCURRENT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_EXT,
+        VK_SHARING_MODE_EXCLUSIVE,
         0u,
         NULL,
     };
@@ -340,9 +340,10 @@ int main(int argc, char *argv[])
         1,
         "none",
         0,
-        VK_MAKE_VERSION(1, 0, 0),
+        VK_MAKE_VERSION(1, 1, 0),
     };
 
+    const char *enabledInstanceExtensions[] = { VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME };
     VkInstanceCreateInfo instanceCreateInfo = {
         VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         NULL,
@@ -350,8 +351,8 @@ int main(int argc, char *argv[])
         &applicationInfo,
         0,
         NULL,
-        0,
-        NULL,
+        1,
+        enabledInstanceExtensions,
     };
 
     VkResult result;
@@ -425,13 +426,14 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    float queuePriority = 1.0f;
     VkDeviceQueueCreateInfo deviceQueueCreateInfo = {
         VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         NULL,
         0,
         (uint32_t)queueFamilyIndex,
         1,
-        NULL,
+        &queuePriority,
     };
 
     // Query the list of supported cooperative matrix multiply sizes/types.
@@ -453,7 +455,6 @@ int main(int argc, char *argv[])
     result = pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesNV(physicalDevice, &numCooperativeMatrixProperties, &cooperativeMatrixProperties[0]);
     CHECK_RESULT(result);
 
-    // Enable the feature/extension.
     VkPhysicalDeviceCooperativeMatrixFeaturesNV coopMatFeatures = {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_NV,
         NULL,
@@ -461,17 +462,34 @@ int main(int argc, char *argv[])
         VK_FALSE, // cooperativeMatrixRobustBufferAccess
     };
 
-    const char *enabledExtensions[] = { VK_NV_COOPERATIVE_MATRIX_EXTENSION_NAME, VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME };
+    VkPhysicalDeviceBufferAddressFeaturesEXT bufferDeviceAddressFeatures = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_ADDRESS_FEATURES_EXT,
+        &coopMatFeatures,
+        VK_TRUE, // bufferDeviceAddress
+        VK_FALSE, // bufferDeviceAddressCaptureReplay
+        VK_FALSE, // bufferDeviceAddressMultiDevice
+    };
+
+    VkPhysicalDeviceFloat16Int8FeaturesKHR float16Features = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT16_INT8_FEATURES_KHR,
+        &bufferDeviceAddressFeatures,
+        VK_TRUE, // shaderFloat16
+        VK_FALSE, // shaderInt8
+    };
+
+    const char *enabledDeviceExtensions[] = { VK_NV_COOPERATIVE_MATRIX_EXTENSION_NAME,
+                                              VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+                                              VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME };
     VkDeviceCreateInfo deviceCreateInfo = {
         VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        &coopMatFeatures,
+        &float16Features,
         0,
         1,
         &deviceQueueCreateInfo,
         0,
         NULL,
-        2,
-        enabledExtensions,
+        3,
+        enabledDeviceExtensions,
         NULL,
     };
 
@@ -726,7 +744,7 @@ int main(int argc, char *argv[])
                 0,
                 4*sizeof(VkDeviceAddress),
                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                VK_SHARING_MODE_CONCURRENT,
+                VK_SHARING_MODE_EXCLUSIVE,
                 0u,
                 NULL,
             };
@@ -938,9 +956,9 @@ int main(int argc, char *argv[])
                 for (int i = 0; i < warmupCount; ++i) {
                     result = vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
                     CHECK_RESULT(result);
+                    result = vkQueueWaitIdle(queue);
+                    CHECK_RESULT(result);
                 }
-                result = vkQueueWaitIdle(queue);
-                CHECK_RESULT(result);
             }
 
             // Time the submit/wait time for this command buffer.
