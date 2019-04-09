@@ -37,10 +37,10 @@ layout(constant_id = 3) const uint TILE_M = 1;
 layout(constant_id = 4) const uint TILE_N = 1;
 layout(constant_id = 5) const uint TILE_K = 1;
 layout(constant_id = 6) const uint K = 1;
-layout(constant_id = 7) const uint stride0 = 1;
-layout(constant_id = 8) const uint stride1 = 1;
-layout(constant_id = 9) const uint stride2 = 1;
-layout(constant_id = 10)const uint stride3 = 1;
+layout(constant_id = 7) const uint strideA = 1;
+layout(constant_id = 8) const uint strideB = 1;
+layout(constant_id = 9) const uint strideC = 1;
+layout(constant_id = 10)const uint strideD = 1;
 layout(constant_id = 11)const float alpha = 1.0;
 layout(constant_id = 12)const float beta = 1.0;
 
@@ -99,7 +99,7 @@ void main()
     uvec4 temp_A[TILE_K / A_K_INC];
     [[unroll]] for (uint k = 0; k < TILE_K; k += A_K_INC) {
         uint gk = chunkK + k + ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x / TILE_M);
-        temp_A[k / A_K_INC] = inputAV4.x[(stride0 * gi + gk)/8];
+        temp_A[k / A_K_INC] = inputAV4.x[(strideA * gi + gk)/8];
     }
 
     // fetch B for the first iteration
@@ -110,7 +110,7 @@ void main()
     uvec4 temp_B[TILE_K / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)];
     [[unroll]] for (uint k = 0; k < TILE_K; k += INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW) {
         uint gk = chunkK + k + gl_LocalInvocationID.x / INVS_PER_ROW;
-        temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)] = inputBV4.x[(stride1 * gk + gj)/ELEMENTS_PER_LOAD];
+        temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)] = inputBV4.x[(strideB * gk + gj)/ELEMENTS_PER_LOAD];
     }
 
     // Iterate over K.
@@ -154,7 +154,7 @@ void main()
         // prefetch A
         [[unroll]] for (uint k = 0; k < TILE_K; k += ELEMENTS_PER_LOAD * INVOCATIONS_PER_WORKGROUP/TILE_M) {
             uint gk = (chunkK + TILE_K) + k + ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x / TILE_M);
-            if (!last) temp_A[k / A_K_INC] = inputAV4.x[(stride0 * gi + gk)/8];
+            if (!last) temp_A[k / A_K_INC] = inputAV4.x[(strideA * gi + gk)/8];
         }
 
         // prefetch B
@@ -162,7 +162,7 @@ void main()
         uint sj = 16/2*(gl_LocalInvocationID.x % INVS_PER_ROW);
         [[unroll]] for (uint k = 0; k < TILE_K; k += INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW) {
             uint gk = (chunkK + TILE_K) + k + gl_LocalInvocationID.x / INVS_PER_ROW;
-            if (!last) temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)] = inputBV4.x[(stride1 * gk + gj)/8];
+            if (!last) temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)] = inputBV4.x[(strideB * gk + gj)/8];
         }
 
         // The actual math loop
@@ -198,10 +198,10 @@ void main()
 
             // fetch and add C matrix
             fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> matC;
-            coopMatLoadNV(matC, inputC.x, stride2 * gi + gj, stride2, false);
+            coopMatLoadNV(matC, inputC.x, strideC * gi + gj, strideC, false);
 
             result[i][j] = C_TYPE(alpha) * result[i][j] + C_TYPE(beta) * matC;
-            coopMatStoreNV(result[i][j], outputO.x, stride3 * gi + gj, stride3, false);
+            coopMatStoreNV(result[i][j], outputO.x, strideD * gi + gj, strideD, false);
         }
     }
 }
