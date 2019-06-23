@@ -93,6 +93,12 @@ struct TestCase
     uint32_t TILE_M;
     uint32_t TILE_N;
     uint32_t TILE_K;
+
+    bool BColMajor;
+    uint32_t ARowLen;
+    uint32_t ANumRows;
+    uint32_t BRowLen;
+    uint32_t BNumRows;
 };
 
 struct MatrixDesc
@@ -164,14 +170,9 @@ struct MatrixDesc
         }
     }
 
-    void setData(int m, int n, float value)
+    float getData(int m, int n, bool colMajor) const
     {
-        setData(m * dims.cols + n, value);
-    }
-
-    float getData(int m, int n) const
-    {
-        return getData(m * dims.cols + n);
+        return getData(colMajor ? (n * dims.rows + m) : (m * dims.cols + n));
     }
 };
 
@@ -608,7 +609,9 @@ int main(int argc, char *argv[])
         for (unsigned int TILE_M_size = params->granularityTILE_M; TILE_M_size <= params->maxTILE_M; TILE_M_size += params->granularityTILE_M) {
         double maxPerfThisIter = 0;
         for (unsigned int TILE_N_size = params->granularityTILE_N; TILE_N_size <= params->maxTILE_N; TILE_N_size += params->granularityTILE_N) {
+        for (unsigned int bcolmajor = 0; bcolmajor <= 1; ++bcolmajor) {
 
+            bool BColMajor = bcolmajor != 0;
             TestCase testCase = {
                 (TestType)tt, //TestType testType;
                 cooperativeMatrixProps->AType, // VkComponentTypeNV inputType;
@@ -628,6 +631,8 @@ int main(int argc, char *argv[])
                 TILE_M_size, // uint32_t TILE_M;
                 TILE_N_size, // uint32_t TILE_N;
                 cooperativeMatrixProps->KSize, // uint32_t TILE_K;
+
+                BColMajor, // bool BColMajor;
             };
             float alpha = 2.0f, beta = 3.0f;
 
@@ -650,6 +655,11 @@ int main(int argc, char *argv[])
             testCase.M = (testCase.M + testCase.TILE_M - 1) / testCase.TILE_M * testCase.TILE_M;
             testCase.N = (testCase.N + testCase.TILE_N - 1) / testCase.TILE_N * testCase.TILE_N;
             testCase.K = (testCase.K + testCase.TILE_K - 1) / testCase.TILE_K * testCase.TILE_K;
+
+            testCase.ARowLen = testCase.TILE_K;
+            testCase.ANumRows = testCase.TILE_M;
+            testCase.BRowLen = BColMajor ? testCase.TILE_K : testCase.TILE_N;
+            testCase.BNumRows = BColMajor ? testCase.TILE_N : testCase.TILE_K;
 
             enum {MAT_A = 0, MAT_B = 1, MAT_C = 2, MAT_D = 3, NUM_MATS = 4};
 
@@ -761,11 +771,16 @@ int main(int argc, char *argv[])
                 testCase.TILE_K,
                 testCase.K,
                 testCase.K, // stride0
-                testCase.N, // stride1
+                testCase.BColMajor ? testCase.K : testCase.N, // stride1
                 testCase.N, // stride2
                 testCase.N, // stride3
                 *(uint32_t *)&alpha,
                 *(uint32_t *)&beta,
+                testCase.BColMajor,
+                testCase.ARowLen,
+                testCase.ANumRows,
+                testCase.BRowLen,
+                testCase.BNumRows,
             };
 
 #if 0
@@ -788,6 +803,11 @@ int main(int argc, char *argv[])
                 {10, sizeof(uint32_t) * 10, sizeof(uint32_t)},
                 {11, sizeof(uint32_t) * 11, sizeof(uint32_t)},
                 {12, sizeof(uint32_t) * 12, sizeof(uint32_t)},
+                {13, sizeof(uint32_t) * 13, sizeof(uint32_t)},
+                {14, sizeof(uint32_t) * 14, sizeof(uint32_t)},
+                {15, sizeof(uint32_t) * 15, sizeof(uint32_t)},
+                {16, sizeof(uint32_t) * 16, sizeof(uint32_t)},
+                {17, sizeof(uint32_t) * 17, sizeof(uint32_t)},
             };
 
             VkSpecializationInfo specInfo =
@@ -902,7 +922,7 @@ int main(int argc, char *argv[])
             uint64_t flops = 2ULL * (uint64_t)testCase.M * (uint64_t)testCase.N * (uint64_t)testCase.K * (uint64_t)repeatCount;
             double tflops = (double)flops / (double)(elapsedUs / 1000000.0) / (1000.0*1000.0*1000.0*1000.0);
 
-            printf("TILE_M=%d TILE_N=%d, TILE_K=%d ", testCase.TILE_M, testCase.TILE_N, testCase.TILE_K);
+            printf("TILE_M=%d TILE_N=%d, TILE_K=%d BColMajor=%d ", testCase.TILE_M, testCase.TILE_N, testCase.TILE_K, testCase.BColMajor);
             if (!correctness) {
                 printf("  %f TFlops\n", tflops);
             }
@@ -939,12 +959,12 @@ int main(int argc, char *argv[])
                         float ref = 0;
                         for (uint32_t k = 0; k < testCase.K; ++k)
                         {
-                            ref += mat_a.getData(i, k) * mat_b.getData(k, j);
+                            ref += mat_a.getData(i, k, false) * mat_b.getData(k, j, testCase.BColMajor);
                         }
 
-                        ref = alpha*ref + beta*mat_c.getData(i, j);
+                        ref = alpha*ref + beta*mat_c.getData(i, j, false);
 
-                        float Dij = mat_d.getData(i, j);
+                        float Dij = mat_d.getData(i, j, false);
                         if (ref != Dij) {
                             pass = false;
                             printf("error %d %d %f != %f\n", i, j, ref, Dij);
@@ -970,6 +990,7 @@ int main(int argc, char *argv[])
                 break;
             }
 
+        } // bcolmajor
         } // TILE_N_size
         } // TILE_M_size
 

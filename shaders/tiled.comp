@@ -43,6 +43,7 @@ layout(constant_id = 9) const uint strideC = 1;
 layout(constant_id = 10)const uint strideD = 1;
 layout(constant_id = 11)const float alpha = 1.0;
 layout(constant_id = 12)const float beta = 1.0;
+layout(constant_id = 13)const bool BColMajor = false;
 
 // #defines set on command line:
 // PREC = 16 or 32 (bits per component)
@@ -58,6 +59,11 @@ layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 const uint C_ROWS = TILE_M / lM;
 const uint C_COLS = TILE_N / lN;
 fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> result[C_ROWS][C_COLS];
+
+uint coordToOffset(uint i, uint j, uint stride, bool colMajor)
+{
+    return colMajor ? (stride * j + i) : (stride * i + j);
+}
 
 void main()
 {
@@ -83,13 +89,13 @@ void main()
         [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
             uint gi = TILE_M * tileID.y + lM * i;
             uint gk = chunkK;
-            coopMatLoadNV(matA[i], inputA.x, strideA * gi + gk, strideA, false);
+            coopMatLoadNV(matA[i], inputA.x, coordToOffset(gi, gk, strideA, false), strideA, false);
         }
         fcoopmatNV<16, gl_ScopeSubgroup, lK, lN> matB;
         [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
             uint gj = TILE_N * tileID.x + lN * j;
             uint gk = chunkK;
-            coopMatLoadNV(matB, inputB.x, strideB * gk + gj, strideB, false);
+            coopMatLoadNV(matB, inputB.x, coordToOffset(gk, gj, strideB, BColMajor), strideB, BColMajor);
             [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
                 result[i][j] = coopMatMulAddNV(matA[i], matB, result[i][j]);
             }
@@ -103,10 +109,10 @@ void main()
 
             // fetch and add C matrix
             fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> matC;
-            coopMatLoadNV(matC, inputC.x, strideC * gi + gj, strideC, false);
+            coopMatLoadNV(matC, inputC.x, coordToOffset(gi, gj, strideC, false), strideC, false);
 
             result[i][j] = C_TYPE(alpha) * result[i][j] + C_TYPE(beta) * matC;
-            coopMatStoreNV(result[i][j], outputO.x, strideD * gi + gj, strideD, false);
+            coopMatStoreNV(result[i][j], outputO.x, coordToOffset(gi, gj, strideD, false), strideD, false);
         }
     }
 }

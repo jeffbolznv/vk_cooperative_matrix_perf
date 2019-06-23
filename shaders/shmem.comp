@@ -43,6 +43,13 @@ layout(constant_id = 9) const uint strideC = 1;
 layout(constant_id = 10)const uint strideD = 1;
 layout(constant_id = 11)const float alpha = 1.0;
 layout(constant_id = 12)const float beta = 1.0;
+layout(constant_id = 13)const bool BColMajor = false;
+// Size and number of rows in A matrix. equal to TILE_K,TILE_M (always row major)
+layout(constant_id = 14)const uint A_ROW_LEN = 1;
+layout(constant_id = 15)const uint A_NUM_ROWS = 1;
+// Size and number of rows in B matrix. equal to TILE_N,TILE_K for row major and TILE_K,TILE_N for col major
+layout(constant_id = 16)const uint B_ROW_LEN = 1;
+layout(constant_id = 17)const uint B_NUM_ROWS = 1;
 
 // #defines set on command line:
 // PREC = 16 or 32 (bits per component)
@@ -56,9 +63,12 @@ layout(buffer_reference) buffer InputC { C_TYPE x[]; } inputC;
 layout(buffer_reference) buffer Output { C_TYPE x[]; } outputO;
 layout(set=0, binding=0, std430) uniform Params { InputAV4 inputAV4; InputBV4 inputBV4; InputC inputC; Output outputO; } params;
 
-// Shared memory storage. Add a skew of 8/8=1 per row to avoid bank conflicts when accessing the shared memory
-shared uvec4 Ash[TILE_M * (TILE_K + 8) * 2/16];
-shared uvec4 Bsh[TILE_K * (TILE_N + 8) * 2/16];
+const int ELEMENTS_PER_VEC4 = 16/2; // 16 bytes, 2 bytes per element
+const int ROW_PAD_SH = ELEMENTS_PER_VEC4;
+
+// Shared memory storage. Add a skew of ROW_PAD_SH bytes per row to avoid bank conflicts when accessing the shared memory
+shared uvec4 Ash[A_NUM_ROWS * (A_ROW_LEN + ROW_PAD_SH) / ELEMENTS_PER_VEC4];
+shared uvec4 Bsh[B_NUM_ROWS * (B_ROW_LEN + ROW_PAD_SH) / ELEMENTS_PER_VEC4];
 
 const uint WORKGROUP_WIDTH_IN_SUBGROUPS = 4;
 const uint WORKGROUP_HEIGHT_IN_SUBGROUPS = 2;
@@ -68,6 +78,11 @@ layout(local_size_x = INVOCATIONS_PER_WORKGROUP, local_size_y = 1, local_size_z 
 const uint C_ROWS = TILE_M / WORKGROUP_HEIGHT_IN_SUBGROUPS / lM;
 const uint C_COLS = TILE_N / WORKGROUP_WIDTH_IN_SUBGROUPS / lN;
 fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> result[C_ROWS][C_COLS];
+
+uint coordToOffset(uint i, uint j, uint stride, bool colMajor)
+{
+    return colMajor ? (stride * j + i) : (stride * i + j);
+}
 
 void main()
 {
@@ -89,28 +104,30 @@ void main()
 
     uint chunkK = 0;
 
-    const int ELEMENTS_PER_LOAD = 16/2; // 16 bytes, 2 bytes per element
-
     // fetch A for the first iteration;
-    uint gi = TILE_M * tileID.y + (gl_LocalInvocationID.x % TILE_M);
-    const uint si = (gl_LocalInvocationID.x % TILE_M);
-    const uint A_K_INC = ELEMENTS_PER_LOAD * INVOCATIONS_PER_WORKGROUP / TILE_M;
+    uint atilei = (gl_LocalInvocationID.x % A_NUM_ROWS);
+    const uint A_K_INC = ELEMENTS_PER_VEC4 * INVOCATIONS_PER_WORKGROUP / A_NUM_ROWS;
 
-    uvec4 temp_A[TILE_K / A_K_INC];
-    [[unroll]] for (uint k = 0; k < TILE_K; k += A_K_INC) {
-        uint gk = chunkK + k + ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x / TILE_M);
-        temp_A[k / A_K_INC] = inputAV4.x[(strideA * gi + gk)/8];
+    uvec4 temp_A[A_ROW_LEN / A_K_INC];
+    uint gabase = coordToOffset(TILE_M * tileID.y, chunkK, strideA, false);
+    [[unroll]] for (uint k = 0; k < A_ROW_LEN; k += A_K_INC) {
+        uint atilek = k + ELEMENTS_PER_VEC4 * (gl_LocalInvocationID.x / A_NUM_ROWS);
+        temp_A[k / A_K_INC] = inputAV4.x[(gabase + strideA * atilei + atilek) / ELEMENTS_PER_VEC4];
     }
 
     // fetch B for the first iteration
-    const uint INVS_PER_ROW = TILE_N/ELEMENTS_PER_LOAD;
-    uint gj = TILE_N * tileID.x + ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x % INVS_PER_ROW);
-    uint sj = ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x % INVS_PER_ROW);
+    const uint INVS_PER_ROW = B_ROW_LEN / ELEMENTS_PER_VEC4;
+    uint btilej = ELEMENTS_PER_VEC4 * (gl_LocalInvocationID.x % INVS_PER_ROW);
 
-    uvec4 temp_B[TILE_K / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)];
-    [[unroll]] for (uint k = 0; k < TILE_K; k += INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW) {
-        uint gk = chunkK + k + gl_LocalInvocationID.x / INVS_PER_ROW;
-        temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)] = inputBV4.x[(strideB * gk + gj)/ELEMENTS_PER_LOAD];
+    uvec4 temp_B[B_NUM_ROWS / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)];
+    // gbbase is the anchor of this tile in global memory. It's computed from the
+    // (k,j) coordinate based on whether the tile is column major. Within this tile,
+    // the global->shared copy always works in terms of contiguous "rows" of memory.
+    // So the addressing within a tile is not affected by BColMajor.
+    uint gbbase = coordToOffset(chunkK, TILE_N * tileID.x, strideB, BColMajor);
+    [[unroll]] for (uint k = 0; k < B_NUM_ROWS; k += INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW) {
+        uint btilek = k + gl_LocalInvocationID.x / INVS_PER_ROW;
+        temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)] = inputBV4.x[(gbbase + strideB * btilek + btilej)/ELEMENTS_PER_VEC4];
     }
 
     // Iterate over K.
@@ -122,26 +139,23 @@ void main()
     for (uint chunkK = 0; chunkK < K; chunkK += TILE_K) {
         bool last = ((chunkK + TILE_K) >= K);
 
-        uint gi = TILE_M * tileID.y + (gl_LocalInvocationID.x % TILE_M);
-        uint si = (gl_LocalInvocationID.x % TILE_M);
-
-        const uint STRIDE_A_SH = (TILE_K + 8);
+        const uint STRIDE_A_SH = (A_ROW_LEN + ROW_PAD_SH);
 
         // ensure that all threads in the subgroup finished reading from SMEM during the last iteration
         barrier();
 
         // store A from local storage to shared memory
-        [[unroll]] for (uint k = 0; k < TILE_K; k += A_K_INC) {
-            uint sk = k + ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x / TILE_M);
-            Ash[(STRIDE_A_SH * si + sk) / 8] = temp_A[k / A_K_INC];
+        [[unroll]] for (uint k = 0; k < A_ROW_LEN; k += A_K_INC) {
+            uint sk = k + ELEMENTS_PER_VEC4 * (gl_LocalInvocationID.x / A_NUM_ROWS);
+            Ash[(STRIDE_A_SH * atilei + sk) / ELEMENTS_PER_VEC4] = temp_A[k / A_K_INC];
         }
 
-        const uint STRIDE_B_SH = (TILE_N + 8);
+        const uint STRIDE_B_SH = (B_ROW_LEN + ROW_PAD_SH);
 
         // store B from local storage to shared memory
-        [[unroll]] for (uint k = 0; k < TILE_K; k += INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW) {
+        [[unroll]] for (uint k = 0; k < B_NUM_ROWS; k += INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW) {
             uint sk = k + gl_LocalInvocationID.x / INVS_PER_ROW;
-            Bsh[(STRIDE_B_SH * sk + sj) / 8] = temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)];
+            Bsh[(STRIDE_B_SH * sk + btilej) / ELEMENTS_PER_VEC4] = temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)];
         }
 
         // wait until all threads finished writing to shared memory before the math loop
@@ -152,17 +166,17 @@ void main()
         // we prefetch data from global memory as soon as possible to hide memory transfers
         // behind math
         // prefetch A
-        [[unroll]] for (uint k = 0; k < TILE_K; k += ELEMENTS_PER_LOAD * INVOCATIONS_PER_WORKGROUP/TILE_M) {
-            uint gk = (chunkK + TILE_K) + k + ELEMENTS_PER_LOAD * (gl_LocalInvocationID.x / TILE_M);
-            if (!last) temp_A[k / A_K_INC] = inputAV4.x[(strideA * gi + gk)/8];
+        uint gabase = coordToOffset(TILE_M * tileID.y, chunkK + TILE_K, strideA, false);
+        [[unroll]] for (uint k = 0; k < A_ROW_LEN; k += A_K_INC) {
+            uint atilek = k + ELEMENTS_PER_VEC4 * (gl_LocalInvocationID.x / A_NUM_ROWS);
+            if (!last) temp_A[k / A_K_INC] = inputAV4.x[(gabase + strideA * atilei + atilek) / ELEMENTS_PER_VEC4];
         }
 
         // prefetch B
-        uint gj = TILE_N * tileID.x + 16/2*(gl_LocalInvocationID.x % INVS_PER_ROW);
-        uint sj = 16/2*(gl_LocalInvocationID.x % INVS_PER_ROW);
-        [[unroll]] for (uint k = 0; k < TILE_K; k += INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW) {
-            uint gk = (chunkK + TILE_K) + k + gl_LocalInvocationID.x / INVS_PER_ROW;
-            if (!last) temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)] = inputBV4.x[(strideB * gk + gj)/8];
+        uint gbbase = coordToOffset(chunkK + TILE_K, TILE_N * tileID.x, strideB, BColMajor);
+        [[unroll]] for (uint k = 0; k < B_NUM_ROWS; k += INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW) {
+            uint btilek = k + gl_LocalInvocationID.x / INVS_PER_ROW;
+            if (!last) temp_B[k / (INVOCATIONS_PER_WORKGROUP / INVS_PER_ROW)] = inputBV4.x[(gbbase + strideB * btilek + btilej) / ELEMENTS_PER_VEC4];
         }
 
         // The actual math loop
@@ -174,14 +188,14 @@ void main()
             fcoopmatNV<16, gl_ScopeSubgroup, lM, lK> matA[C_ROWS];
             [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
                 uint si = lM * (C_ROWS * warpInTile.y + i);
-                coopMatLoadNV(matA[i], Ash, ((TILE_K + 8) * si + sk)/8, TILE_K/8+1, false);
+                coopMatLoadNV(matA[i], Ash, coordToOffset(si, sk, STRIDE_A_SH, false) / ELEMENTS_PER_VEC4, STRIDE_A_SH / ELEMENTS_PER_VEC4, false);
             }
 
             fcoopmatNV<16, gl_ScopeSubgroup, lK, lN> matB;
             [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
                 uint sj = lN * (C_COLS * warpInTile.x + j);
                 // load B
-                coopMatLoadNV(matB, Bsh, ((TILE_N + 8) * sk + sj)/8, TILE_N/8+1, false);
+                coopMatLoadNV(matB, Bsh, coordToOffset(sk, sj, STRIDE_B_SH, BColMajor) / ELEMENTS_PER_VEC4, STRIDE_B_SH / ELEMENTS_PER_VEC4, BColMajor);
 
                 // do the matrix multiply for the current portion of the tile
                 [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
@@ -198,10 +212,10 @@ void main()
 
             // fetch and add C matrix
             fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> matC;
-            coopMatLoadNV(matC, inputC.x, strideC * gi + gj, strideC, false);
+            coopMatLoadNV(matC, inputC.x, coordToOffset(gi, gj, strideC, false), strideC, false);
 
             result[i][j] = C_TYPE(alpha) * result[i][j] + C_TYPE(beta) * matC;
-            coopMatStoreNV(result[i][j], outputO.x, strideD * gi + gj, strideD, false);
+            coopMatStoreNV(result[i][j], outputO.x, coordToOffset(gi, gj, strideD, false), strideD, false);
         }
     }
 }
