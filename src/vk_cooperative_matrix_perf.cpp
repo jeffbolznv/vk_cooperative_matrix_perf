@@ -583,9 +583,9 @@ int main(int argc, char *argv[])
                 componentTypeString[cooperativeMatrixProps->DType],
                 scopeString[cooperativeMatrixProps->scope]);
 
-        // For performance, test a 2048x2048x2048 multiply. For correctness,
+        // For performance, test a 4096x4096x4096 multiply. For correctness,
         // test 256x256x256 (because the CPU reference computation is so slow).
-        uint32_t defaultDim = correctness ? 256 : 2048;
+        uint32_t defaultDim = correctness ? 256 : 4096;
         uint32_t defaultM = defaultDim;
         uint32_t defaultN = defaultDim;
         uint32_t defaultK = defaultDim;
@@ -887,7 +887,7 @@ int main(int argc, char *argv[])
             vkCmdBindDescriptorSets(commandBuffers[1], VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0u, 1, &descriptorSet, 0u, NULL);
             vkCmdBindPipeline(commandBuffers[1], VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
-            uint32_t repeatCount = correctness ? 1 : 100;
+            uint32_t repeatCount = correctness ? 1 : 10;
 
             for (uint32_t i = 0; i < repeatCount; ++i) {
                 vkCmdDispatch(commandBuffers[1], testCase.N / testCase.TILE_N, testCase.M / testCase.TILE_M, 1);
