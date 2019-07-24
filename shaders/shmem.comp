@@ -206,15 +206,18 @@ void main()
     }
 
     [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
+        uint gi = TILE_M * tileID.y + lM * (C_ROWS * warpInTile.y + i);
+        fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> matC[C_COLS];
+
         [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
-            uint gi = TILE_M * tileID.y + lM * (C_ROWS * warpInTile.y + i);
+            uint gj = TILE_N * tileID.x + lN * (C_COLS * warpInTile.x + j);
+            coopMatLoadNV(matC[j], inputC.x, coordToOffset(gi, gj, strideC, false), strideC, false);
+        }
+
+        [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
             uint gj = TILE_N * tileID.x + lN * (C_COLS * warpInTile.x + j);
 
-            // fetch and add C matrix
-            fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> matC;
-            coopMatLoadNV(matC, inputC.x, coordToOffset(gi, gj, strideC, false), strideC, false);
-
-            result[i][j] = C_TYPE(alpha) * result[i][j] + C_TYPE(beta) * matC;
+            result[i][j] = C_TYPE(alpha) * result[i][j] + C_TYPE(beta) * matC[j];
             coopMatStoreNV(result[i][j], outputO.x, coordToOffset(gi, gj, strideD, false), strideD, false);
         }
     }
