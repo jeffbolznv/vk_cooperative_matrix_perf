@@ -13,5 +13,6 @@ that supports the VK_NV_cooperative_matrix extension (available from
 https://developer.nvidia.com/vulkan-driver).
 
 Modifying and rebuilding the shaders requires a glslangValidator.exe with
-GL_NV_cooperative_matrix support. This is included in Vulkan SDK versions
-1.1.106.0 and newer.
+GL_NV_cooperative_matrix and GL_NV_integer_cooperative_matrix support. This
+will be included in future Vulkan SDK versions, but for now requires a build
+with https://github.com/KhronosGroup/glslang/pull/1876.

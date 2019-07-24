@@ -25,7 +25,10 @@
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_KHR_memory_scope_semantics : enable
 #extension GL_NV_cooperative_matrix : enable
+#extension GL_NV_integer_cooperative_matrix : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int32 : enable
 #extension GL_EXT_buffer_reference : enable
 #extension GL_EXT_control_flow_attributes : enable
 
@@ -46,11 +49,14 @@ layout(constant_id = 12)const float beta = 1.0;
 layout(constant_id = 13)const bool BColMajor = false;
 
 // #defines set on command line:
-// PREC = 16 or 32 (bits per component)
-// C_TYPE = float or float16_t
+// A_BITS = 8 or 16 or 32 (bits per component)
+// A_TYPE = e.g. float or float16_t
+// C_BITS = 8 or 16 or 32 (bits per component)
+// C_TYPE = e.g. float or float16_t
+// coopmatT = fcoopmatNV, ucoopmatNV, scoopmatNV
 
-layout(buffer_reference) buffer InputA { float16_t x[]; } inputA;
-layout(buffer_reference) buffer InputB { float16_t x[]; } inputB;
+layout(buffer_reference) buffer InputA { A_TYPE x[]; } inputA;
+layout(buffer_reference) buffer InputB { A_TYPE x[]; } inputB;
 layout(buffer_reference) buffer InputC { C_TYPE x[]; } inputC;
 layout(buffer_reference) buffer Output { C_TYPE x[]; } outputO;
 layout(set=0, binding=0, std430) uniform Params { InputA inputA; InputB inputB; InputC inputC; Output outputO; } params;
@@ -58,7 +64,7 @@ layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 const uint C_ROWS = TILE_M / lM;
 const uint C_COLS = TILE_N / lN;
-fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> result[C_ROWS][C_COLS];
+coopmatT<C_BITS, gl_ScopeSubgroup, lM, lN> result[C_ROWS][C_COLS];
 
 uint coordToOffset(uint i, uint j, uint stride, bool colMajor)
 {
@@ -77,7 +83,7 @@ void main()
     // Initialize result to zero
     [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
         [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
-            result[i][j] = fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN>(0.0);
+            result[i][j] = coopmatT<C_BITS, gl_ScopeSubgroup, lM, lN>(0.0);
         }
     }
 
@@ -85,13 +91,13 @@ void main()
     // load a column of cooperative matrices from matrix B, and multiply all
     // pairs of those matrices.
     for (uint chunkK = 0; chunkK < K; chunkK += TILE_K) {
-        fcoopmatNV<16, gl_ScopeSubgroup, lM, lK> matA[C_ROWS];
+        coopmatT<A_BITS, gl_ScopeSubgroup, lM, lK> matA[C_ROWS];
         [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
             uint gi = TILE_M * tileID.y + lM * i;
             uint gk = chunkK;
             coopMatLoadNV(matA[i], inputA.x, coordToOffset(gi, gk, strideA, false), strideA, false);
         }
-        fcoopmatNV<16, gl_ScopeSubgroup, lK, lN> matB;
+        coopmatT<A_BITS, gl_ScopeSubgroup, lK, lN> matB;
         [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
             uint gj = TILE_N * tileID.x + lN * j;
             uint gk = chunkK;
@@ -108,7 +114,7 @@ void main()
             uint gj = TILE_N * tileID.x + lN * j;
 
             // fetch and add C matrix
-            fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> matC;
+            coopmatT<C_BITS, gl_ScopeSubgroup, lM, lN> matC;
             coopMatLoadNV(matC, inputC.x, coordToOffset(gi, gj, strideC, false), strideC, false);
 
             result[i][j] = C_TYPE(alpha) * result[i][j] + C_TYPE(beta) * matC;

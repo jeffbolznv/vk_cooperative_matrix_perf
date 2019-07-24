@@ -21,7 +21,11 @@ REM FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 REM DEALINGS IN THE SOFTWARE.
 REM
 @echo on
-glslangValidator.exe -DPREC=16 -DC_TYPE=float16_t -V tiled.comp -o tiledfp16.spv
-glslangValidator.exe -DPREC=32 -DC_TYPE=float     -V tiled.comp -o tiledfp32.spv
-glslangValidator.exe -DPREC=16 -DC_TYPE=float16_t -V shmem.comp -o shmemfp16.spv
-glslangValidator.exe -DPREC=32 -DC_TYPE=float     -V shmem.comp -o shmemfp32.spv
+glslangValidator.exe -DA_BITS=16 -DA_TYPE=float16_t -DC_BITS=16 -DC_TYPE=float16_t -DcoopmatT=fcoopmatNV -V tiled.comp -o tiledfp16.spv
+glslangValidator.exe -DA_BITS=16 -DA_TYPE=float16_t -DC_BITS=32 -DC_TYPE=float     -DcoopmatT=fcoopmatNV -V tiled.comp -o tiledfp32.spv
+glslangValidator.exe -DA_BITS=16 -DA_TYPE=float16_t -DC_BITS=16 -DC_TYPE=float16_t -DcoopmatT=fcoopmatNV -V shmem.comp -o shmemfp16.spv
+glslangValidator.exe -DA_BITS=16 -DA_TYPE=float16_t -DC_BITS=32 -DC_TYPE=float     -DcoopmatT=fcoopmatNV -V shmem.comp -o shmemfp32.spv
+glslangValidator.exe -DA_BITS=8  -DA_TYPE=uint8_t   -DC_BITS=32 -DC_TYPE=uint32_t  -DcoopmatT=ucoopmatNV -V tiled.comp -o tiledu8.spv
+glslangValidator.exe -DA_BITS=8  -DA_TYPE=uint8_t   -DC_BITS=32 -DC_TYPE=uint32_t  -DcoopmatT=ucoopmatNV -V shmem.comp -o shmemu8.spv
+glslangValidator.exe -DA_BITS=8  -DA_TYPE=int8_t    -DC_BITS=32 -DC_TYPE=int32_t   -DcoopmatT=icoopmatNV -V tiled.comp -o tileds8.spv
+glslangValidator.exe -DA_BITS=8  -DA_TYPE=int8_t    -DC_BITS=32 -DC_TYPE=int32_t   -DcoopmatT=icoopmatNV -V shmem.comp -o shmems8.spv

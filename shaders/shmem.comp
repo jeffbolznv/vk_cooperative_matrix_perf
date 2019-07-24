@@ -25,7 +25,10 @@
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_KHR_memory_scope_semantics : enable
 #extension GL_NV_cooperative_matrix : enable
+#extension GL_NV_integer_cooperative_matrix : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int32 : enable
 #extension GL_EXT_buffer_reference : enable
 #extension GL_EXT_control_flow_attributes : enable
 
@@ -52,8 +55,11 @@ layout(constant_id = 16)const uint B_ROW_LEN = 1;
 layout(constant_id = 17)const uint B_NUM_ROWS = 1;
 
 // #defines set on command line:
-// PREC = 16 or 32 (bits per component)
-// C_TYPE = float or float16_t
+// A_BITS = 8 or 16 or 32 (bits per component)
+// A_TYPE = e.g. float or float16_t
+// C_BITS = 8 or 16 or 32 (bits per component)
+// C_TYPE = e.g. float or float16_t
+// coopmatT = fcoopmatNV, ucoopmatNV, scoopmatNV
 
 // input bindings for A/B/C and the output
 // bindings for A and B for uvec4/128-bit loads
@@ -63,7 +69,7 @@ layout(buffer_reference) buffer InputC { C_TYPE x[]; } inputC;
 layout(buffer_reference) buffer Output { C_TYPE x[]; } outputO;
 layout(set=0, binding=0, std430) uniform Params { InputAV4 inputAV4; InputBV4 inputBV4; InputC inputC; Output outputO; } params;
 
-const int ELEMENTS_PER_VEC4 = 16/2; // 16 bytes, 2 bytes per element
+const int ELEMENTS_PER_VEC4 = 16/(A_BITS / 8); // 16 bytes, A_BITS bits per element
 const int ROW_PAD_SH = ELEMENTS_PER_VEC4;
 
 // Shared memory storage. Add a skew of ROW_PAD_SH bytes per row to avoid bank conflicts when accessing the shared memory
@@ -77,7 +83,7 @@ const uint INVOCATIONS_PER_WORKGROUP = 32 * NUM_SUBGROUPS;
 layout(local_size_x = INVOCATIONS_PER_WORKGROUP, local_size_y = 1, local_size_z = 1) in;
 const uint C_ROWS = TILE_M / WORKGROUP_HEIGHT_IN_SUBGROUPS / lM;
 const uint C_COLS = TILE_N / WORKGROUP_WIDTH_IN_SUBGROUPS / lN;
-fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> result[C_ROWS][C_COLS];
+coopmatT<C_BITS, gl_ScopeSubgroup, lM, lN> result[C_ROWS][C_COLS];
 
 uint coordToOffset(uint i, uint j, uint stride, bool colMajor)
 {
@@ -98,7 +104,7 @@ void main()
     // Initialize result to zero
     [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
         [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
-            result[i][j] = fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN>(0.0);
+            result[i][j] = coopmatT<C_BITS, gl_ScopeSubgroup, lM, lN>(0.0);
         }
     }
 
@@ -185,13 +191,13 @@ void main()
             uint sk = lK * k;
 
             // load A. A will be reused C_COLS times
-            fcoopmatNV<16, gl_ScopeSubgroup, lM, lK> matA[C_ROWS];
+            coopmatT<A_BITS, gl_ScopeSubgroup, lM, lK> matA[C_ROWS];
             [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
                 uint si = lM * (C_ROWS * warpInTile.y + i);
                 coopMatLoadNV(matA[i], Ash, coordToOffset(si, sk, STRIDE_A_SH, false) / ELEMENTS_PER_VEC4, STRIDE_A_SH / ELEMENTS_PER_VEC4, false);
             }
 
-            fcoopmatNV<16, gl_ScopeSubgroup, lK, lN> matB;
+            coopmatT<A_BITS, gl_ScopeSubgroup, lK, lN> matB;
             [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
                 uint sj = lN * (C_COLS * warpInTile.x + j);
                 // load B
@@ -207,7 +213,7 @@ void main()
 
     [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
         uint gi = TILE_M * tileID.y + lM * (C_ROWS * warpInTile.y + i);
-        fcoopmatNV<PREC, gl_ScopeSubgroup, lM, lN> matC[C_COLS];
+        coopmatT<C_BITS, gl_ScopeSubgroup, lM, lN> matC[C_COLS];
 
         [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
             uint gj = TILE_N * tileID.x + lN * (C_COLS * warpInTile.x + j);

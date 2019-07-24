@@ -72,6 +72,23 @@ enum TestType
     TT_COUNT,
 };
 
+struct {
+    const char *typeName;
+    uint32_t bits;
+} componentTypeInfo[] =
+{
+    { "float16_t",  16 },
+    { "float32_t",  32 },
+    { "float64_t",  64 },
+    { "int8_t",     8 },
+    { "int16_t",    16 },
+    { "int32_t",    32 },
+    { "int64_t",    64 },
+    { "uint8_t",    8 },
+    { "uint16_t",   16 },
+    { "uint32_t",   32 },
+    { "uint64_t",   64 },
+};
 
 struct TestCase
 {
@@ -120,7 +137,20 @@ struct MatrixDesc
     VkDeviceMemory deviceMemory;
     void *ptr;
 
-    void setData(uint32_t i, float value)
+    bool isFloatType() const
+    {
+        switch (dataType)
+        {
+        default:
+            return false;
+        case VK_COMPONENT_TYPE_FLOAT16_NV:
+        case VK_COMPONENT_TYPE_FLOAT32_NV:
+        case VK_COMPONENT_TYPE_FLOAT64_NV:
+            return true;
+        }
+    }
+
+    void setDataFloat(uint32_t i, float value)
     {
         if (dataType == VK_COMPONENT_TYPE_FLOAT32_NV)
         {
@@ -145,7 +175,7 @@ struct MatrixDesc
         }
     }
 
-    float getData(uint32_t i) const
+    float getDataFloat(uint32_t i) const
     {
         if (dataType == VK_COMPONENT_TYPE_FLOAT32_NV)
         {
@@ -170,9 +200,38 @@ struct MatrixDesc
         }
     }
 
-    float getData(int m, int n, bool colMajor) const
+    float getDataFloat(int m, int n, bool colMajor) const
     {
-        return getData(colMajor ? (n * dims.rows + m) : (m * dims.cols + n));
+        return getDataFloat(colMajor ? (n * dims.rows + m) : (m * dims.cols + n));
+    }
+
+    void setDataInt(uint32_t i, uint32_t value)
+    {
+        assert(componentTypeInfo[dataType].bits == 8 || componentTypeInfo[dataType].bits == 32);
+        switch (dataType) {
+        default: assert(0); // fallthrough
+        case VK_COMPONENT_TYPE_UINT8_NV:    ((uint8_t  *)ptr)[i] = (uint8_t)value; break;
+        case VK_COMPONENT_TYPE_UINT32_NV:   ((uint32_t *)ptr)[i] = (uint32_t)value; break;
+        case VK_COMPONENT_TYPE_SINT8_NV:    ((int8_t   *)ptr)[i] = (int8_t)value; break;
+        case VK_COMPONENT_TYPE_SINT32_NV:   ((int32_t  *)ptr)[i] = (int32_t)value; break;
+        }
+    }
+
+    uint32_t getDataInt(uint32_t i) const
+    {
+        assert(componentTypeInfo[dataType].bits == 8 || componentTypeInfo[dataType].bits == 32);
+	    switch (dataType) {
+	    default: assert(0); // fallthrough
+	    case VK_COMPONENT_TYPE_UINT8_NV:	return ((uint8_t  *)ptr)[i];
+	    case VK_COMPONENT_TYPE_UINT32_NV:	return ((uint32_t *)ptr)[i];
+	    case VK_COMPONENT_TYPE_SINT8_NV:	return ((int8_t   *)ptr)[i];
+	    case VK_COMPONENT_TYPE_SINT32_NV:	return ((int32_t  *)ptr)[i];
+	    }
+    }
+
+    uint32_t getDataInt(int m, int n, bool colMajor) const
+    {
+        return getDataInt(colMajor ? (n * dims.rows + m) : (m * dims.cols + n));
     }
 };
 
@@ -184,7 +243,7 @@ void createMatrixDesc(VkDevice device, VkPhysicalDeviceMemoryProperties &memoryP
     m.dims.rows = rows;
     m.dims.cols = cols;
     m.dataType = dt;
-    m.elementSize = m.dataType == VK_COMPONENT_TYPE_FLOAT16_NV ? 2 : 4;
+    m.elementSize = componentTypeInfo[m.dataType].bits / 8;
     m.totalElements = m.dims.cols * m.dims.rows;
     m.bufferSize = m.totalElements * m.elementSize;
 
@@ -509,11 +568,6 @@ int main(int argc, char *argv[])
     result = vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, commandBuffers);
     CHECK_RESULT(result);
 
-    static const char *componentTypeString[] = {
-        "fp16",
-        "fp32",
-        // ...
-    };
     static const char *scopeString[] = {
         "invalid",
         "device",
@@ -530,29 +584,37 @@ int main(int argc, char *argv[])
         VkCooperativeMatrixPropertiesNV *cooperativeMatrixProps = &cooperativeMatrixProperties[i];
 
         if (cooperativeMatrixProps->DType != VK_COMPONENT_TYPE_FLOAT16_NV &&
-            cooperativeMatrixProps->DType != VK_COMPONENT_TYPE_FLOAT32_NV) {
+            cooperativeMatrixProps->DType != VK_COMPONENT_TYPE_FLOAT32_NV &&
+            cooperativeMatrixProps->AType != VK_COMPONENT_TYPE_UINT8_NV &&
+            cooperativeMatrixProps->AType != VK_COMPONENT_TYPE_SINT8_NV) {
             continue;
         }
 
-        const char *fileName;
+        std::string suffix =
+            cooperativeMatrixProps->AType == VK_COMPONENT_TYPE_UINT8_NV ? "u8" :
+            cooperativeMatrixProps->AType == VK_COMPONENT_TYPE_SINT8_NV ? "s8" :
+            cooperativeMatrixProps->DType == VK_COMPONENT_TYPE_FLOAT16_NV ? "fp16" : "fp32";
+
+        std::string fileName;
         switch (tt) {
         default:
             assert(0);
         case TT_SHARED:
-            fileName = cooperativeMatrixProps->DType == VK_COMPONENT_TYPE_FLOAT16_NV ? "shaders/shmemfp16.spv" : "shaders/shmemfp32.spv";
+            fileName = std::string("shaders/shmem");
             break;
         case TT_TILED:
-            fileName = cooperativeMatrixProps->DType == VK_COMPONENT_TYPE_FLOAT16_NV ? "shaders/tiledfp16.spv" : "shaders/tiledfp32.spv";
+            fileName = std::string("shaders/tiled");
             break;
         }
+        fileName = fileName + suffix + ".spv";
 
-        printf("\nshader: %s\n", fileName);
+        printf("\nshader: %s\n", fileName.c_str());
 
         // Load and create the shader module.
-        std::ifstream spirvfile(fileName, std::ios::binary | std::ios::ate);
+        std::ifstream spirvfile(fileName.c_str(), std::ios::binary | std::ios::ate);
         std::streampos spirvsize = spirvfile.tellg();
         if ((int)spirvsize == -1) {
-            printf("%s not found!\n", fileName);
+            printf("%s not found!\n", fileName.c_str());
             throw;
         }
         spirvfile.seekg(0, std::ios::beg);
@@ -577,10 +639,10 @@ int main(int argc, char *argv[])
                 cooperativeMatrixProps->MSize,
                 cooperativeMatrixProps->NSize,
                 cooperativeMatrixProps->KSize,
-                componentTypeString[cooperativeMatrixProps->AType],
-                componentTypeString[cooperativeMatrixProps->BType],
-                componentTypeString[cooperativeMatrixProps->CType],
-                componentTypeString[cooperativeMatrixProps->DType],
+                componentTypeInfo[cooperativeMatrixProps->AType].typeName,
+                componentTypeInfo[cooperativeMatrixProps->BType].typeName,
+                componentTypeInfo[cooperativeMatrixProps->CType].typeName,
+                componentTypeInfo[cooperativeMatrixProps->DType].typeName,
                 scopeString[cooperativeMatrixProps->scope]);
 
         // For performance, test a 4096x4096x4096 multiply. For correctness,
@@ -612,6 +674,13 @@ int main(int argc, char *argv[])
         for (unsigned int bcolmajor = 0; bcolmajor <= 1; ++bcolmajor) {
 
             bool BColMajor = bcolmajor != 0;
+
+            // B matrix must be wide enough to load via uvec4 addressing from shared memory
+            if (!BColMajor && tt == TT_SHARED &&
+                componentTypeInfo[cooperativeMatrixProps->BType].bits / 8 * cooperativeMatrixProps->NSize < 16) {
+                continue;
+            }
+
             TestCase testCase = {
                 (TestType)tt, //TestType testType;
                 cooperativeMatrixProps->AType, // VkComponentTypeNV inputType;
@@ -638,13 +707,15 @@ int main(int argc, char *argv[])
 
             if (tt == TT_SHARED) {
                 // These TILE_K sizes are what happens to perform better on current HW.
-                if (cooperativeMatrixProps->DType == VK_COMPONENT_TYPE_FLOAT16_NV) {
+                if (componentTypeInfo[cooperativeMatrixProps->AType].bits == 8) {
+                    testCase.TILE_K = 64;
+                } else if (cooperativeMatrixProps->DType == VK_COMPONENT_TYPE_FLOAT16_NV) {
                     testCase.TILE_K = 32;
                 } else {
                     testCase.TILE_K = 16;
                 }
                 // This tile size is too slow and may TDR.
-                if (cooperativeMatrixProps->DType == VK_COMPONENT_TYPE_FLOAT32_NV &&
+                if (componentTypeInfo[cooperativeMatrixProps->DType].bits == 32 &&
                     testCase.TILE_M == 256 && testCase.TILE_N == 256) {
                     continue;
                 }
@@ -754,9 +825,16 @@ int main(int argc, char *argv[])
             for (uint32_t i = 0; i < NUM_MATS; ++i) {
                 MatrixDesc &m = matrices[i];
                 for (uint32_t j = 0; j < m.totalElements; ++j) {
-                    m.setData(j, ((float)(rand() & 0x3) - 1.0f) / 2.0f);
-                    if (i == 3) {
-                        m.setData(j, 1234.0f);
+                    if (m.isFloatType()) {
+                        m.setDataFloat(j, ((float)(rand() & 0x3) - 1.0f) / 2.0f);
+                        if (i == 3) {
+                            m.setDataFloat(j, 1234.0f);
+                        }
+                    } else {
+                        m.setDataInt(j, (rand() & 0xFF) - 128);
+                        if (i == 3) {
+                            m.setDataInt(j, 1234);
+                        }
                     }
                 }
             }
@@ -952,22 +1030,44 @@ int main(int argc, char *argv[])
                 const MatrixDesc &mat_d = matrices[MAT_D];
                 bool pass = true;
 
-                for (uint32_t i = 0; i < testCase.M; ++i)
-                {
-                    for (uint32_t j = 0; j < testCase.N; ++j)
+                if (mat_a.isFloatType()) {
+                    for (uint32_t i = 0; i < testCase.M; ++i)
                     {
-                        float ref = 0;
-                        for (uint32_t k = 0; k < testCase.K; ++k)
+                        for (uint32_t j = 0; j < testCase.N; ++j)
                         {
-                            ref += mat_a.getData(i, k, false) * mat_b.getData(k, j, testCase.BColMajor);
+                            float ref = 0;
+                            for (uint32_t k = 0; k < testCase.K; ++k)
+                            {
+                                ref += mat_a.getDataFloat(i, k, false) * mat_b.getDataFloat(k, j, testCase.BColMajor);
+                            }
+
+                            ref = alpha*ref + beta*mat_c.getDataFloat(i, j, false);
+
+                            float Dij = mat_d.getDataFloat(i, j, false);
+                            if (ref != Dij) {
+                                pass = false;
+                                printf("error %d %d %f != %f\n", i, j, ref, Dij);
+                            }
                         }
+                    }
+                } else {
+                    for (uint32_t i = 0; i < testCase.M; ++i)
+                    {
+                        for (uint32_t j = 0; j < testCase.N; ++j)
+                        {
+                            uint32_t ref = 0;
+                            for (uint32_t k = 0; k < testCase.K; ++k)
+                            {
+                                ref += mat_a.getDataInt(i, k, false) * mat_b.getDataInt(k, j, testCase.BColMajor);
+                            }
 
-                        ref = alpha*ref + beta*mat_c.getData(i, j, false);
+                            ref = ((int)alpha)*ref + ((int)beta)*mat_c.getDataInt(i, j, false);
 
-                        float Dij = mat_d.getData(i, j, false);
-                        if (ref != Dij) {
-                            pass = false;
-                            printf("error %d %d %f != %f\n", i, j, ref, Dij);
+                            uint32_t Dij = mat_d.getDataInt(i, j, false);
+                            if (ref != Dij) {
+                                pass = false;
+                                printf("error %d %d %d != %d\n", i, j, ref, Dij);
+                            }
                         }
                     }
                 }
