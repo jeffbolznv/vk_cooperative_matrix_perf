@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2019-2024, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -24,8 +24,7 @@
 #extension GL_KHR_shader_subgroup_basic : enable
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_KHR_memory_scope_semantics : enable
-#extension GL_NV_cooperative_matrix : enable
-#extension GL_NV_integer_cooperative_matrix : enable
+#extension GL_KHR_cooperative_matrix : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : enable
@@ -59,7 +58,6 @@ layout(constant_id = 17)const uint B_NUM_ROWS = 1;
 // A_TYPE = e.g. float or float16_t
 // C_BITS = 8 or 16 or 32 (bits per component)
 // C_TYPE = e.g. float or float16_t
-// coopmatT = fcoopmatNV, ucoopmatNV, scoopmatNV
 
 // input bindings for A/B/C and the output
 // bindings for A and B for uvec4/128-bit loads
@@ -83,7 +81,7 @@ const uint INVOCATIONS_PER_WORKGROUP = 32 * NUM_SUBGROUPS;
 layout(local_size_x = INVOCATIONS_PER_WORKGROUP, local_size_y = 1, local_size_z = 1) in;
 const uint C_ROWS = TILE_M / WORKGROUP_HEIGHT_IN_SUBGROUPS / lM;
 const uint C_COLS = TILE_N / WORKGROUP_WIDTH_IN_SUBGROUPS / lN;
-coopmatT<C_BITS, gl_ScopeSubgroup, lM, lN> result[C_ROWS][C_COLS];
+coopmat<C_TYPE, gl_ScopeSubgroup, lM, lN, gl_MatrixUseAccumulator> result[C_ROWS][C_COLS];
 
 uint coordToOffset(uint i, uint j, uint stride, bool colMajor)
 {
@@ -104,7 +102,7 @@ void main()
     // Initialize result to zero
     [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
         [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
-            result[i][j] = coopmatT<C_BITS, gl_ScopeSubgroup, lM, lN>(0.0);
+            result[i][j] = coopmat<C_TYPE, gl_ScopeSubgroup, lM, lN, gl_MatrixUseAccumulator>(0.0);
         }
     }
 
@@ -191,21 +189,21 @@ void main()
             uint sk = lK * k;
 
             // load A. A will be reused C_COLS times
-            coopmatT<A_BITS, gl_ScopeSubgroup, lM, lK> matA[C_ROWS];
+            coopmat<A_TYPE, gl_ScopeSubgroup, lM, lK, gl_MatrixUseA> matA[C_ROWS];
             [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
                 uint si = lM * (C_ROWS * warpInTile.y + i);
-                coopMatLoadNV(matA[i], Ash, coordToOffset(si, sk, STRIDE_A_SH, false) / ELEMENTS_PER_VEC4, STRIDE_A_SH / ELEMENTS_PER_VEC4, false);
+                coopMatLoad(matA[i], Ash, coordToOffset(si, sk, STRIDE_A_SH, false) / ELEMENTS_PER_VEC4, STRIDE_A_SH / ELEMENTS_PER_VEC4, gl_CooperativeMatrixLayoutRowMajor);
             }
 
-            coopmatT<A_BITS, gl_ScopeSubgroup, lK, lN> matB;
+            coopmat<A_TYPE, gl_ScopeSubgroup, lK, lN, gl_MatrixUseB> matB;
             [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
                 uint sj = lN * (C_COLS * warpInTile.x + j);
                 // load B
-                coopMatLoadNV(matB, Bsh, coordToOffset(sk, sj, STRIDE_B_SH, BColMajor) / ELEMENTS_PER_VEC4, STRIDE_B_SH / ELEMENTS_PER_VEC4, BColMajor);
+                coopMatLoad(matB, Bsh, coordToOffset(sk, sj, STRIDE_B_SH, BColMajor) / ELEMENTS_PER_VEC4, STRIDE_B_SH / ELEMENTS_PER_VEC4, BColMajor ? gl_CooperativeMatrixLayoutColumnMajor : gl_CooperativeMatrixLayoutRowMajor);
 
                 // do the matrix multiply for the current portion of the tile
                 [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
-                    result[i][j] = coopMatMulAddNV(matA[i], matB, result[i][j]);
+                    result[i][j] = coopMatMulAdd(matA[i], matB, result[i][j]);
                 }
             }
         }
@@ -213,18 +211,18 @@ void main()
 
     [[unroll]] for (uint i = 0; i < C_ROWS; ++i) {
         uint gi = TILE_M * tileID.y + lM * (C_ROWS * warpInTile.y + i);
-        coopmatT<C_BITS, gl_ScopeSubgroup, lM, lN> matC[C_COLS];
+        coopmat<C_TYPE, gl_ScopeSubgroup, lM, lN, gl_MatrixUseAccumulator> matC[C_COLS];
 
         [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
             uint gj = TILE_N * tileID.x + lN * (C_COLS * warpInTile.x + j);
-            coopMatLoadNV(matC[j], inputC.x, coordToOffset(gi, gj, strideC, false), strideC, false);
+            coopMatLoad(matC[j], inputC.x, coordToOffset(gi, gj, strideC, false), strideC, gl_CooperativeMatrixLayoutRowMajor);
         }
 
         [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
             uint gj = TILE_N * tileID.x + lN * (C_COLS * warpInTile.x + j);
 
             result[i][j] = C_TYPE(alpha) * result[i][j] + C_TYPE(beta) * matC[j];
-            coopMatStoreNV(result[i][j], outputO.x, coordToOffset(gi, gj, strideD, false), strideD, false);
+            coopMatStore(result[i][j], outputO.x, coordToOffset(gi, gj, strideD, false), strideD, gl_CooperativeMatrixLayoutRowMajor);
         }
     }
 }

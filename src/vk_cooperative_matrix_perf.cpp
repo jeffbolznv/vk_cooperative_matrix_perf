@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2019-2024, NVIDIA CORPORATION. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -93,8 +93,8 @@ struct {
 struct TestCase
 {
     TestType testType;
-    VkComponentTypeNV inputType;
-    VkComponentTypeNV outputType;
+    VkComponentTypeKHR inputType;
+    VkComponentTypeKHR outputType;
 
     // MxNxK is the size of the full matrix multiply
     uint32_t M;
@@ -124,7 +124,7 @@ struct MatrixDesc
     {
         uint32_t rows, cols;
     } dims;
-    VkComponentTypeNV dataType;
+    VkComponentTypeKHR dataType;
     size_t elementSize;
     VkDeviceSize bufferSize;
     uint32_t totalElements;
@@ -143,16 +143,16 @@ struct MatrixDesc
         {
         default:
             return false;
-        case VK_COMPONENT_TYPE_FLOAT16_NV:
-        case VK_COMPONENT_TYPE_FLOAT32_NV:
-        case VK_COMPONENT_TYPE_FLOAT64_NV:
+        case VK_COMPONENT_TYPE_FLOAT16_KHR:
+        case VK_COMPONENT_TYPE_FLOAT32_KHR:
+        case VK_COMPONENT_TYPE_FLOAT64_KHR:
             return true;
         }
     }
 
     void setDataFloat(uint32_t i, float value)
     {
-        if (dataType == VK_COMPONENT_TYPE_FLOAT32_NV)
+        if (dataType == VK_COMPONENT_TYPE_FLOAT32_KHR)
         {
             ((float *)ptr)[i] = value;
         }
@@ -177,7 +177,7 @@ struct MatrixDesc
 
     float getDataFloat(uint32_t i) const
     {
-        if (dataType == VK_COMPONENT_TYPE_FLOAT32_NV)
+        if (dataType == VK_COMPONENT_TYPE_FLOAT32_KHR)
         {
             return ((float *)ptr)[i];
         }
@@ -210,10 +210,10 @@ struct MatrixDesc
         assert(componentTypeInfo[dataType].bits == 8 || componentTypeInfo[dataType].bits == 32);
         switch (dataType) {
         default: assert(0); // fallthrough
-        case VK_COMPONENT_TYPE_UINT8_NV:    ((uint8_t  *)ptr)[i] = (uint8_t)value; break;
-        case VK_COMPONENT_TYPE_UINT32_NV:   ((uint32_t *)ptr)[i] = (uint32_t)value; break;
-        case VK_COMPONENT_TYPE_SINT8_NV:    ((int8_t   *)ptr)[i] = (int8_t)value; break;
-        case VK_COMPONENT_TYPE_SINT32_NV:   ((int32_t  *)ptr)[i] = (int32_t)value; break;
+        case VK_COMPONENT_TYPE_UINT8_KHR:    ((uint8_t  *)ptr)[i] = (uint8_t)value; break;
+        case VK_COMPONENT_TYPE_UINT32_KHR:   ((uint32_t *)ptr)[i] = (uint32_t)value; break;
+        case VK_COMPONENT_TYPE_SINT8_KHR:    ((int8_t   *)ptr)[i] = (int8_t)value; break;
+        case VK_COMPONENT_TYPE_SINT32_KHR:   ((int32_t  *)ptr)[i] = (int32_t)value; break;
         }
     }
 
@@ -222,10 +222,10 @@ struct MatrixDesc
         assert(componentTypeInfo[dataType].bits == 8 || componentTypeInfo[dataType].bits == 32);
 	    switch (dataType) {
 	    default: assert(0); // fallthrough
-	    case VK_COMPONENT_TYPE_UINT8_NV:	return ((uint8_t  *)ptr)[i];
-	    case VK_COMPONENT_TYPE_UINT32_NV:	return ((uint32_t *)ptr)[i];
-	    case VK_COMPONENT_TYPE_SINT8_NV:	return ((int8_t   *)ptr)[i];
-	    case VK_COMPONENT_TYPE_SINT32_NV:	return ((int32_t  *)ptr)[i];
+	    case VK_COMPONENT_TYPE_UINT8_KHR:	return ((uint8_t  *)ptr)[i];
+	    case VK_COMPONENT_TYPE_UINT32_KHR:	return ((uint32_t *)ptr)[i];
+	    case VK_COMPONENT_TYPE_SINT8_KHR:	return ((int8_t   *)ptr)[i];
+	    case VK_COMPONENT_TYPE_SINT32_KHR:	return ((int32_t  *)ptr)[i];
 	    }
     }
 
@@ -236,7 +236,7 @@ struct MatrixDesc
 };
 
 // create storage for a matrix
-void createMatrixDesc(VkDevice device, VkPhysicalDeviceMemoryProperties &memoryProperties, MatrixDesc &m, VkComponentTypeNV dt, int rows, int cols)
+void createMatrixDesc(VkDevice device, VkPhysicalDeviceMemoryProperties &memoryProperties, MatrixDesc &m, VkComponentTypeKHR dt, int rows, int cols)
 {
     VkResult result;
 
@@ -252,7 +252,7 @@ void createMatrixDesc(VkDevice device, VkPhysicalDeviceMemoryProperties &memoryP
         NULL,
         0,
         m.bufferSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_EXT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR,
         VK_SHARING_MODE_EXCLUSIVE,
         0u,
         NULL,
@@ -269,9 +269,16 @@ void createMatrixDesc(VkDevice device, VkPhysicalDeviceMemoryProperties &memoryP
     int32_t hostIndex = findProperties(&memoryProperties, memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
     int32_t deviceIndex = findProperties(&memoryProperties, memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
+    VkMemoryAllocateFlagsInfo memAllocateFlagsInfo = {
+        VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+        NULL,
+        VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+        0,
+    };
+
     VkMemoryAllocateInfo memAllocateInfo = {
         VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        NULL,
+        &memAllocateFlagsInfo,
         memReqs.size,
         (uint32_t)hostIndex,
     };
@@ -322,7 +329,7 @@ int main(int argc, char *argv[])
         1,
         "none",
         0,
-        VK_MAKE_VERSION(1, 1, 0),
+        VK_MAKE_VERSION(1, 2, 0),
     };
 
     const char *enabledInstanceExtensions[] = { VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME };
@@ -367,7 +374,7 @@ int main(int argc, char *argv[])
         CHECK_RESULT(result);
 
         for (uint32_t j = 0; j < numExtensions; ++j) {
-            if (strcmp(extensions[j].extensionName, VK_NV_COOPERATIVE_MATRIX_EXTENSION_NAME) == 0) {
+            if (strcmp(extensions[j].extensionName, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME) == 0) {
                 physicalDeviceIndex = i;
                 break;
             }
@@ -378,7 +385,7 @@ int main(int argc, char *argv[])
     }
 
     if (physicalDeviceIndex == -1) {
-        printf("couldn't find physical device that supports VK_NV_cooperative_matrix\n");
+        printf("couldn't find physical device that supports VK_KHR_cooperative_matrix\n");
         return 0;
     }
     VkPhysicalDevice physicalDevice = physicalDevices[physicalDeviceIndex];
@@ -420,57 +427,50 @@ int main(int argc, char *argv[])
 
     // Query the list of supported cooperative matrix multiply sizes/types.
     uint32_t numCooperativeMatrixProperties = 0;
-    vector<VkCooperativeMatrixPropertiesNV> cooperativeMatrixProperties;
+    vector<VkCooperativeMatrixPropertiesKHR> cooperativeMatrixProperties;
 
-    PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesNV pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesNV =
-        (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesNV)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesNV");
+    PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR =
+        (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR");
 
-    result = pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesNV(physicalDevice, &numCooperativeMatrixProperties, NULL);
+    result = pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(physicalDevice, &numCooperativeMatrixProperties, NULL);
     CHECK_RESULT(result);
 
     cooperativeMatrixProperties.resize(numCooperativeMatrixProperties);
     for (uint32_t i = 0; i < numCooperativeMatrixProperties; ++i) {
-        cooperativeMatrixProperties[i].sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_NV;
+        cooperativeMatrixProperties[i].sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
         cooperativeMatrixProperties[i].pNext = NULL;
     }
 
-    result = pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesNV(physicalDevice, &numCooperativeMatrixProperties, &cooperativeMatrixProperties[0]);
+    result = pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(physicalDevice, &numCooperativeMatrixProperties, &cooperativeMatrixProperties[0]);
     CHECK_RESULT(result);
 
-    VkPhysicalDeviceCooperativeMatrixFeaturesNV coopMatFeatures = {
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_NV,
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR coopMatFeatures = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
         NULL,
         VK_TRUE, // cooperativeMatrix
         VK_FALSE, // cooperativeMatrixRobustBufferAccess
     };
 
-    VkPhysicalDeviceBufferAddressFeaturesEXT bufferDeviceAddressFeatures = {
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_ADDRESS_FEATURES_EXT,
-        &coopMatFeatures,
-        VK_TRUE, // bufferDeviceAddress
-        VK_FALSE, // bufferDeviceAddressCaptureReplay
-        VK_FALSE, // bufferDeviceAddressMultiDevice
-    };
+    VkPhysicalDeviceVulkan11Features vulkan11Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, &coopMatFeatures };
+    vulkan11Features.storageBuffer16BitAccess = VK_TRUE;
 
-    VkPhysicalDeviceFloat16Int8FeaturesKHR float16Features = {
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT16_INT8_FEATURES_KHR,
-        &bufferDeviceAddressFeatures,
-        VK_TRUE, // shaderFloat16
-        VK_FALSE, // shaderInt8
-    };
+    VkPhysicalDeviceVulkan12Features vulkan12Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, &vulkan11Features };
+    vulkan12Features.bufferDeviceAddress = VK_TRUE;
+    vulkan12Features.shaderFloat16 = VK_TRUE;
+    vulkan12Features.shaderInt8 = VK_TRUE;
+    vulkan12Features.vulkanMemoryModel = VK_TRUE;
+    vulkan12Features.vulkanMemoryModelDeviceScope = VK_TRUE;
 
-    const char *enabledDeviceExtensions[] = { VK_NV_COOPERATIVE_MATRIX_EXTENSION_NAME,
-                                              VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
-                                              VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME };
+    const char *enabledDeviceExtensions[] = { VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, };
     VkDeviceCreateInfo deviceCreateInfo = {
         VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        &float16Features,
+        &vulkan12Features,
         0,
         1,
         &deviceQueueCreateInfo,
         0,
         NULL,
-        3,
+        sizeof(enabledDeviceExtensions) / sizeof(enabledDeviceExtensions[0]),
         enabledDeviceExtensions,
         NULL,
     };
@@ -581,19 +581,19 @@ int main(int argc, char *argv[])
     for (uint32_t tt = 0; tt < TT_COUNT; ++tt) {
     for (uint32_t i = 0; i < numCooperativeMatrixProperties; ++i) {
 
-        VkCooperativeMatrixPropertiesNV *cooperativeMatrixProps = &cooperativeMatrixProperties[i];
+        VkCooperativeMatrixPropertiesKHR *cooperativeMatrixProps = &cooperativeMatrixProperties[i];
 
-        if (cooperativeMatrixProps->DType != VK_COMPONENT_TYPE_FLOAT16_NV &&
-            cooperativeMatrixProps->DType != VK_COMPONENT_TYPE_FLOAT32_NV &&
-            cooperativeMatrixProps->AType != VK_COMPONENT_TYPE_UINT8_NV &&
-            cooperativeMatrixProps->AType != VK_COMPONENT_TYPE_SINT8_NV) {
+        if (cooperativeMatrixProps->ResultType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
+            cooperativeMatrixProps->ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR &&
+            cooperativeMatrixProps->AType != VK_COMPONENT_TYPE_UINT8_KHR &&
+            cooperativeMatrixProps->AType != VK_COMPONENT_TYPE_SINT8_KHR) {
             continue;
         }
 
         std::string suffix =
-            cooperativeMatrixProps->AType == VK_COMPONENT_TYPE_UINT8_NV ? "u8" :
-            cooperativeMatrixProps->AType == VK_COMPONENT_TYPE_SINT8_NV ? "s8" :
-            cooperativeMatrixProps->DType == VK_COMPONENT_TYPE_FLOAT16_NV ? "fp16" : "fp32";
+            cooperativeMatrixProps->AType == VK_COMPONENT_TYPE_UINT8_KHR ? "u8" :
+            cooperativeMatrixProps->AType == VK_COMPONENT_TYPE_SINT8_KHR ? "s8" :
+            cooperativeMatrixProps->ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR ? "fp16" : "fp32";
 
         std::string fileName;
         switch (tt) {
@@ -642,7 +642,7 @@ int main(int argc, char *argv[])
                 componentTypeInfo[cooperativeMatrixProps->AType].typeName,
                 componentTypeInfo[cooperativeMatrixProps->BType].typeName,
                 componentTypeInfo[cooperativeMatrixProps->CType].typeName,
-                componentTypeInfo[cooperativeMatrixProps->DType].typeName,
+                componentTypeInfo[cooperativeMatrixProps->ResultType].typeName,
                 scopeString[cooperativeMatrixProps->scope]);
 
         // For performance, test a 4096x4096x4096 multiply. For correctness,
@@ -683,8 +683,8 @@ int main(int argc, char *argv[])
 
             TestCase testCase = {
                 (TestType)tt, //TestType testType;
-                cooperativeMatrixProps->AType, // VkComponentTypeNV inputType;
-                cooperativeMatrixProps->DType, // VkComponentTypeNV outputType;
+                cooperativeMatrixProps->AType, // VkComponentTypeKHR inputType;
+                cooperativeMatrixProps->ResultType, // VkComponentTypeKHR outputType;
 
                 // MxNxK is the size of the full matrix multiply
                 defaultM, // uint32_t M;
@@ -709,13 +709,13 @@ int main(int argc, char *argv[])
                 // These TILE_K sizes are what happens to perform better on current HW.
                 if (componentTypeInfo[cooperativeMatrixProps->AType].bits == 8) {
                     testCase.TILE_K = 64;
-                } else if (cooperativeMatrixProps->DType == VK_COMPONENT_TYPE_FLOAT16_NV) {
+                } else if (cooperativeMatrixProps->ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR) {
                     testCase.TILE_K = 32;
                 } else {
                     testCase.TILE_K = 16;
                 }
                 // This tile size is too slow and may TDR.
-                if (componentTypeInfo[cooperativeMatrixProps->DType].bits == 32 &&
+                if (componentTypeInfo[cooperativeMatrixProps->ResultType].bits == 32 &&
                     testCase.TILE_M == 256 && testCase.TILE_N == 256) {
                     continue;
                 }
@@ -738,8 +738,8 @@ int main(int argc, char *argv[])
 
             createMatrixDesc(device, memoryProperties, matrices[MAT_A], cooperativeMatrixProps->AType, testCase.M, testCase.K);
             createMatrixDesc(device, memoryProperties, matrices[MAT_B], cooperativeMatrixProps->AType, testCase.K, testCase.N);
-            createMatrixDesc(device, memoryProperties, matrices[MAT_C], cooperativeMatrixProps->DType, testCase.M, testCase.N);
-            createMatrixDesc(device, memoryProperties, matrices[MAT_D], cooperativeMatrixProps->DType, testCase.M, testCase.N);
+            createMatrixDesc(device, memoryProperties, matrices[MAT_C], cooperativeMatrixProps->ResultType, testCase.M, testCase.N);
+            createMatrixDesc(device, memoryProperties, matrices[MAT_D], cooperativeMatrixProps->ResultType, testCase.M, testCase.N);
 
             // Allocate buffer to hold device addresses for the four matrices
             VkBuffer paramBuffer;
@@ -765,9 +765,16 @@ int main(int argc, char *argv[])
 
             int32_t hostIndex = findProperties(&memoryProperties, memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
 
+            VkMemoryAllocateFlagsInfo memAllocateFlagsInfo = {
+                VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+                NULL,
+                VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
+                0,
+            };
+
             VkMemoryAllocateInfo memAllocateInfo = {
                 VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                NULL,
+                &memAllocateFlagsInfo,
                 memReqs.size,
                 (uint32_t)hostIndex,
             };
@@ -781,20 +788,20 @@ int main(int argc, char *argv[])
             result = vkMapMemory(device, paramMemory, 0, bufferCreateInfo.size, 0, &paramPtr);
             CHECK_RESULT(result);
 
-            PFN_vkGetBufferDeviceAddressEXT pfn_vkGetBufferDeviceAddressEXT =
-                (PFN_vkGetBufferDeviceAddressEXT)vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddressEXT");
+            PFN_vkGetBufferDeviceAddress pfn_vkGetBufferDeviceAddress =
+                (PFN_vkGetBufferDeviceAddress)vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddress");
 
             for (int i = 0; i < NUM_MATS; ++i) {
                 MatrixDesc &m = matrices[i];
 
-                VkBufferDeviceAddressInfoEXT info = {
-                    VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_EXT,
+                VkBufferDeviceAddressInfo info = {
+                    VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
                     NULL,
                     0,
                 };
                 VkDeviceAddress *addrsInMemory = (VkDeviceAddress *)paramPtr;
                 info.buffer = m.deviceBuffer;
-                VkDeviceAddress addr = pfn_vkGetBufferDeviceAddressEXT(device, &info);
+                VkDeviceAddress addr = pfn_vkGetBufferDeviceAddress(device, &info);
                 addrsInMemory[i] = addr;
             }
 
