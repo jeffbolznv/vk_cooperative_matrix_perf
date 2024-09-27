@@ -329,7 +329,7 @@ int main(int argc, char *argv[])
         1,
         "none",
         0,
-        VK_MAKE_VERSION(1, 2, 0),
+        VK_MAKE_VERSION(1, 3, 0),
     };
 
     const char *enabledInstanceExtensions[] = { VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME };
@@ -461,10 +461,14 @@ int main(int argc, char *argv[])
     vulkan12Features.vulkanMemoryModel = VK_TRUE;
     vulkan12Features.vulkanMemoryModelDeviceScope = VK_TRUE;
 
+    VkPhysicalDeviceVulkan13Features vulkan13Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &vulkan12Features };
+    vulkan13Features.subgroupSizeControl = VK_TRUE;
+    vulkan13Features.computeFullSubgroups = VK_TRUE;
+
     const char *enabledDeviceExtensions[] = { VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, };
     VkDeviceCreateInfo deviceCreateInfo = {
         VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        &vulkan12Features,
+        &vulkan13Features,
         0,
         1,
         &deviceQueueCreateInfo,
@@ -903,10 +907,16 @@ int main(int argc, char *argv[])
                 specData,
             };
 
+            VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroupSizeCreateInfo = {
+                VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+                NULL,
+                32,
+            };
+
             VkPipelineShaderStageCreateInfo shaderCreateInfo = {
                 VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                NULL,
-                0,
+                &subgroupSizeCreateInfo,
+                VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT,
                 VK_SHADER_STAGE_COMPUTE_BIT,
                 shaderModule,
                 "main",
