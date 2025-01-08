@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2019-2024, NVIDIA CORPORATION. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: MIT
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -29,6 +30,41 @@
 #include <string.h>
 
 #include <vulkan/vulkan.h>
+
+#define VK_NV_COOPERATIVE_MATRIX_2_SPEC_VERSION 1
+#define VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME "VK_NV_cooperative_matrix2"
+
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_FEATURES_NV ((VkStructureType)1000593000)
+#define VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_FLEXIBLE_DIMENSIONS_PROPERTIES_NV ((VkStructureType)1000593001)
+
+typedef struct VkPhysicalDeviceCooperativeMatrix2FeaturesNV {
+    VkStructureType    sType;
+    void*              pNext;
+    VkBool32           cooperativeMatrixWorkgroupScope;
+    VkBool32           cooperativeMatrixFlexibleDimensions;
+    VkBool32           cooperativeMatrixReductions;
+    VkBool32           cooperativeMatrixConversions;
+    VkBool32           cooperativeMatrixPerElementOperations;
+    VkBool32           cooperativeMatrixTensorAddressing;
+    VkBool32           cooperativeMatrixBlockLoads;
+} VkPhysicalDeviceCooperativeMatrix2FeaturesNV;
+
+typedef struct VkCooperativeMatrixFlexibleDimensionsPropertiesNV {
+    VkStructureType       sType;
+    void*                 pNext;
+    uint32_t              MGranularity;
+    uint32_t              NGranularity;
+    uint32_t              KGranularity;
+    VkComponentTypeKHR    AType;
+    VkComponentTypeKHR    BType;
+    VkComponentTypeKHR    CType;
+    VkComponentTypeKHR    ResultType;
+    VkBool32              saturatingAccumulation;
+    VkScopeKHR            scope;
+    uint32_t              workgroupInvocations;
+} VkCooperativeMatrixFlexibleDimensionsPropertiesNV;
+
+typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV)(VkPhysicalDevice physicalDevice, uint32_t* pPropertyCount, VkCooperativeMatrixFlexibleDimensionsPropertiesNV* pProperties);
 
 using std::vector;
 
@@ -67,8 +103,9 @@ int32_t findProperties(const VkPhysicalDeviceMemoryProperties* pMemoryProperties
 
 enum TestType
 {
-    TT_SHARED = 0,
-    TT_TILED,
+    TT_WORKGROUP = 0,
+    TT_SHARED = 1,
+    TT_TILED = 2,
     TT_COUNT,
 };
 
@@ -361,6 +398,8 @@ int main(int argc, char *argv[])
 
     int physicalDeviceIndex = -1;
 
+    bool coopmat2Supported = false;
+
     for (uint32_t i = 0; i < numPhysicalDevices; ++i) {
 
         uint32_t numExtensions = 0;
@@ -375,8 +414,12 @@ int main(int argc, char *argv[])
 
         for (uint32_t j = 0; j < numExtensions; ++j) {
             if (strcmp(extensions[j].extensionName, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME) == 0) {
+                printf("%s supported\n", extensions[j].extensionName);
                 physicalDeviceIndex = i;
-                break;
+            }
+            if (strcmp(extensions[j].extensionName, VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME) == 0) {
+                printf("%s supported\n", extensions[j].extensionName);
+                coopmat2Supported = true;
             }
         }
         if (physicalDeviceIndex != -1) {
@@ -444,12 +487,41 @@ int main(int argc, char *argv[])
     result = pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(physicalDevice, &numCooperativeMatrixProperties, &cooperativeMatrixProperties[0]);
     CHECK_RESULT(result);
 
+    uint32_t numCooperativeMatrixFlexibleDimensionsProperties = 0;
+    vector<VkCooperativeMatrixFlexibleDimensionsPropertiesNV> cooperativeMatrixFlexibleDimensionsProperties;
+
+    if (coopmat2Supported) {
+        PFN_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV pfn_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV =
+            (PFN_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV");
+
+        result = pfn_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV(physicalDevice, &numCooperativeMatrixFlexibleDimensionsProperties, NULL);
+        CHECK_RESULT(result);
+
+        cooperativeMatrixFlexibleDimensionsProperties.resize(numCooperativeMatrixFlexibleDimensionsProperties);
+        for (uint32_t i = 0; i < numCooperativeMatrixFlexibleDimensionsProperties; ++i) {
+            cooperativeMatrixFlexibleDimensionsProperties[i].sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_FLEXIBLE_DIMENSIONS_PROPERTIES_NV;
+            cooperativeMatrixFlexibleDimensionsProperties[i].pNext = NULL;
+        }
+
+        result = pfn_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV(physicalDevice, &numCooperativeMatrixFlexibleDimensionsProperties, &cooperativeMatrixFlexibleDimensionsProperties[0]);
+        CHECK_RESULT(result);
+    }
+
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coopMatFeatures = {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
         NULL,
         VK_TRUE, // cooperativeMatrix
         VK_FALSE, // cooperativeMatrixRobustBufferAccess
     };
+
+    VkPhysicalDeviceCooperativeMatrix2FeaturesNV coopmat2Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_FEATURES_NV };
+
+    if (coopmat2Supported){
+        coopmat2Features.cooperativeMatrixWorkgroupScope = VK_TRUE;
+        coopmat2Features.cooperativeMatrixFlexibleDimensions = VK_TRUE;
+        coopmat2Features.cooperativeMatrixTensorAddressing = VK_TRUE;
+        coopMatFeatures.pNext = &coopmat2Features;
+    }
 
     VkPhysicalDeviceVulkan11Features vulkan11Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, &coopMatFeatures };
     vulkan11Features.storageBuffer16BitAccess = VK_TRUE;
@@ -462,10 +534,13 @@ int main(int argc, char *argv[])
     vulkan12Features.vulkanMemoryModelDeviceScope = VK_TRUE;
 
     VkPhysicalDeviceVulkan13Features vulkan13Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &vulkan12Features };
-    vulkan13Features.subgroupSizeControl = VK_TRUE;
-    vulkan13Features.computeFullSubgroups = VK_TRUE;
+    vulkan13Features.maintenance4 = VK_TRUE;
 
-    const char *enabledDeviceExtensions[] = { VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, };
+    std::vector<const char *> enabledDeviceExtensions = { VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, };
+    if (coopmat2Supported) {
+        enabledDeviceExtensions.push_back(VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME);
+    }
+
     VkDeviceCreateInfo deviceCreateInfo = {
         VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         &vulkan13Features,
@@ -474,8 +549,8 @@ int main(int argc, char *argv[])
         &deviceQueueCreateInfo,
         0,
         NULL,
-        sizeof(enabledDeviceExtensions) / sizeof(enabledDeviceExtensions[0]),
-        enabledDeviceExtensions,
+        (uint32_t)enabledDeviceExtensions.size(),
+        enabledDeviceExtensions.data(),
         NULL,
     };
 
@@ -583,26 +658,109 @@ int main(int argc, char *argv[])
 
     // Loop over all shader types and all cooperative matrix properties.
     for (uint32_t tt = 0; tt < TT_COUNT; ++tt) {
-    for (uint32_t i = 0; i < numCooperativeMatrixProperties; ++i) {
+    for (uint32_t i = 0; i < numCooperativeMatrixProperties + numCooperativeMatrixFlexibleDimensionsProperties; ++i) {
 
-        VkCooperativeMatrixPropertiesKHR *cooperativeMatrixProps = &cooperativeMatrixProperties[i];
+        uint32_t              MSize;
+        uint32_t              NSize;
+        uint32_t              KSize;
+        VkComponentTypeKHR    AType;
+        VkComponentTypeKHR    BType;
+        VkComponentTypeKHR    CType;
+        VkComponentTypeKHR    ResultType;
+        VkScopeKHR            scope;
 
-        if (cooperativeMatrixProps->ResultType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
-            cooperativeMatrixProps->ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR &&
-            cooperativeMatrixProps->AType != VK_COMPONENT_TYPE_UINT8_KHR &&
-            cooperativeMatrixProps->AType != VK_COMPONENT_TYPE_SINT8_KHR) {
+        if (i < numCooperativeMatrixFlexibleDimensionsProperties) {
+            VkCooperativeMatrixFlexibleDimensionsPropertiesNV *cooperativeMatrixProps = &cooperativeMatrixFlexibleDimensionsProperties[i];
+            MSize = cooperativeMatrixProps->MGranularity;
+            NSize = cooperativeMatrixProps->NGranularity;
+            KSize = cooperativeMatrixProps->KGranularity;
+            AType = cooperativeMatrixProps->AType;
+            BType = cooperativeMatrixProps->BType;
+            CType = cooperativeMatrixProps->CType;
+            ResultType = cooperativeMatrixProps->ResultType;
+            scope = cooperativeMatrixProps->scope;
+
+            bool skip = false;
+            for (uint32_t j = 0; j < i; ++j) {
+                VkCooperativeMatrixFlexibleDimensionsPropertiesNV *other = &cooperativeMatrixFlexibleDimensionsProperties[j];
+                if (AType == other->AType &&
+                    BType == other->BType &&
+                    CType == other->CType &&
+                    ResultType == other->ResultType &&
+                    scope == other->scope) {
+                    // We don't currently look at the granularity and workgroupInvocations, so skip "duplicates"
+                    skip = true;
+                }
+            }
+            if (skip) {
+                continue;
+            }
+        } else {
+            VkCooperativeMatrixPropertiesKHR *cooperativeMatrixProps = &cooperativeMatrixProperties[i - numCooperativeMatrixFlexibleDimensionsProperties];
+            MSize = cooperativeMatrixProps->MSize;
+            NSize = cooperativeMatrixProps->NSize;
+            KSize = cooperativeMatrixProps->KSize;
+            AType = cooperativeMatrixProps->AType;
+            BType = cooperativeMatrixProps->BType;
+            CType = cooperativeMatrixProps->CType;
+            ResultType = cooperativeMatrixProps->ResultType;
+            scope = cooperativeMatrixProps->scope;
+        }
+
+        if ((tt == TT_WORKGROUP && scope != VK_SCOPE_WORKGROUP_KHR) ||
+            (tt != TT_WORKGROUP && scope != VK_SCOPE_SUBGROUP_KHR)) {
+            continue;
+        }
+
+        if (ResultType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
+            ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR &&
+            AType != VK_COMPONENT_TYPE_UINT8_KHR &&
+            AType != VK_COMPONENT_TYPE_SINT8_KHR) {
+            continue;
+        }
+
+        if (AType != VK_COMPONENT_TYPE_UINT8_KHR &&
+            AType != VK_COMPONENT_TYPE_SINT8_KHR &&
+            AType != VK_COMPONENT_TYPE_FLOAT16_KHR) {
+            printf("\nunsupported AType %d\n", AType);
+            continue;
+        }
+
+        if (BType != VK_COMPONENT_TYPE_UINT8_KHR &&
+            BType != VK_COMPONENT_TYPE_SINT8_KHR &&
+            BType != VK_COMPONENT_TYPE_FLOAT16_KHR) {
+            printf("\nunsupported BType %d\n", BType);
+            continue;
+        }
+
+        if (CType != VK_COMPONENT_TYPE_UINT32_KHR &&
+            CType != VK_COMPONENT_TYPE_SINT32_KHR &&
+            CType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
+            CType != VK_COMPONENT_TYPE_FLOAT32_KHR) {
+            printf("\nunsupported CType %d\n", CType);
+            continue;
+        }
+
+        if (ResultType != VK_COMPONENT_TYPE_UINT32_KHR &&
+            ResultType != VK_COMPONENT_TYPE_SINT32_KHR &&
+            ResultType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
+            ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR) {
+            printf("\nunsupported ResultType %d\n", ResultType);
             continue;
         }
 
         std::string suffix =
-            cooperativeMatrixProps->AType == VK_COMPONENT_TYPE_UINT8_KHR ? "u8" :
-            cooperativeMatrixProps->AType == VK_COMPONENT_TYPE_SINT8_KHR ? "s8" :
-            cooperativeMatrixProps->ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR ? "fp16" : "fp32";
+            AType == VK_COMPONENT_TYPE_UINT8_KHR ? "u8" :
+            AType == VK_COMPONENT_TYPE_SINT8_KHR ? "s8" :
+            ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR ? "fp16" : "fp32";
 
         std::string fileName;
         switch (tt) {
         default:
             assert(0);
+        case TT_WORKGROUP:
+            fileName = std::string("shaders/workgroup");
+            break;
         case TT_SHARED:
             fileName = std::string("shaders/shmem");
             break;
@@ -638,16 +796,15 @@ int main(int argc, char *argv[])
         result = vkCreateShaderModule(device, &shaderModuleCreateInfo, NULL, &shaderModule);
         CHECK_RESULT(result);
 
-
-        printf("\ncooperativeMatrixProps = %dx%dx%d   A = %s B = %s C = %s D = %s scope = %s\n",
-                cooperativeMatrixProps->MSize,
-                cooperativeMatrixProps->NSize,
-                cooperativeMatrixProps->KSize,
-                componentTypeInfo[cooperativeMatrixProps->AType].typeName,
-                componentTypeInfo[cooperativeMatrixProps->BType].typeName,
-                componentTypeInfo[cooperativeMatrixProps->CType].typeName,
-                componentTypeInfo[cooperativeMatrixProps->ResultType].typeName,
-                scopeString[cooperativeMatrixProps->scope]);
+        printf("\ncooperativeMatrixProps = %dx%dx%d   A = %s B = %s C = %s D = %s scope = %s \n",
+                MSize,
+                NSize,
+                KSize,
+                componentTypeInfo[AType].typeName,
+                componentTypeInfo[BType].typeName,
+                componentTypeInfo[CType].typeName,
+                componentTypeInfo[ResultType].typeName,
+                scopeString[scope]);
 
         // For performance, test a 4096x4096x4096 multiply. For correctness,
         // test 256x256x256 (because the CPU reference computation is so slow).
@@ -666,8 +823,9 @@ int main(int argc, char *argv[])
         // TT_SHARED requires a multiple of 128x128 to satisfy the assumptions
         // of its SSBO->shared memory copy code.
         SubTestParams subTestParams[] = {
+            { 256, 256, 128, 128}, // TT_WORKGROUP
             { 256, 256, 128, 128 }, // TT_SHARED
-            { 128, 128, cooperativeMatrixProps->MSize, cooperativeMatrixProps->NSize }, // TT_TILED
+            { 128, 128, MSize, NSize }, // TT_TILED
         };
 
         SubTestParams *params = &subTestParams[tt];
@@ -676,19 +834,28 @@ int main(int argc, char *argv[])
         double maxPerfThisIter = 0;
         for (unsigned int TILE_N_size = params->granularityTILE_N; TILE_N_size <= params->maxTILE_N; TILE_N_size += params->granularityTILE_N) {
         for (unsigned int bcolmajor = 0; bcolmajor <= 1; ++bcolmajor) {
+        for (unsigned int TILE_K = 16; TILE_K <= 64; TILE_K *= 2) {
+        for (unsigned int workgroupSize = 32; workgroupSize <= 256; workgroupSize *= 2) {
+
+            if (tt == TT_WORKGROUP && (TILE_N_size == 192 || TILE_M_size == 192)) {
+                continue;
+            }
+            if (tt == TT_WORKGROUP && TILE_K < KSize) {
+                continue;
+            }
 
             bool BColMajor = bcolmajor != 0;
 
             // B matrix must be wide enough to load via uvec4 addressing from shared memory
             if (!BColMajor && tt == TT_SHARED &&
-                componentTypeInfo[cooperativeMatrixProps->BType].bits / 8 * cooperativeMatrixProps->NSize < 16) {
+                componentTypeInfo[BType].bits / 8 * NSize < 16) {
                 continue;
             }
 
             TestCase testCase = {
                 (TestType)tt, //TestType testType;
-                cooperativeMatrixProps->AType, // VkComponentTypeKHR inputType;
-                cooperativeMatrixProps->ResultType, // VkComponentTypeKHR outputType;
+                AType, // VkComponentTypeKHR inputType;
+                ResultType, // VkComponentTypeKHR outputType;
 
                 // MxNxK is the size of the full matrix multiply
                 defaultM, // uint32_t M;
@@ -696,33 +863,63 @@ int main(int argc, char *argv[])
                 defaultK, // uint32_t K;
 
                 // Each cooperative matrix multiply is lMxlNxlK
-                cooperativeMatrixProps->MSize, // uint32_t lM;
-                cooperativeMatrixProps->NSize, // uint32_t lN;
-                cooperativeMatrixProps->KSize, // uint32_t lK;
+                MSize, // uint32_t lM;
+                NSize, // uint32_t lN;
+                KSize, // uint32_t lK;
 
                 // size of workgroup tile in destination matrix
                 TILE_M_size, // uint32_t TILE_M;
                 TILE_N_size, // uint32_t TILE_N;
-                cooperativeMatrixProps->KSize, // uint32_t TILE_K;
+                TILE_K, // uint32_t TILE_K;
 
                 BColMajor, // bool BColMajor;
             };
             float alpha = 2.0f, beta = 3.0f;
 
-            if (tt == TT_SHARED) {
-                // These TILE_K sizes are what happens to perform better on current HW.
-                if (componentTypeInfo[cooperativeMatrixProps->AType].bits == 8) {
-                    testCase.TILE_K = 64;
-                } else if (cooperativeMatrixProps->ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR) {
-                    testCase.TILE_K = 32;
+            if (tt == TT_SHARED || tt == TT_WORKGROUP) {
+                // These TILE_K sizes happens to perform well on current HW.
+                if (componentTypeInfo[AType].bits == 8) {
+                    if (testCase.TILE_K != 64) {
+                        continue;
+                    }
+                } else if (ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR) {
+                    if (testCase.TILE_K != 32) {
+                        continue;
+                    }
                 } else {
-                    testCase.TILE_K = 16;
+                    if (testCase.TILE_K != 16) {
+                        continue;
+                    }
                 }
                 // This tile size is too slow and may TDR.
-                if (componentTypeInfo[cooperativeMatrixProps->ResultType].bits == 32 &&
+                if (componentTypeInfo[ResultType].bits == 32 &&
                     testCase.TILE_M == 256 && testCase.TILE_N == 256) {
                     continue;
                 }
+            } else {
+                if (testCase.TILE_K != KSize) {
+                    continue;
+                }
+            }
+            switch (tt) {
+            case TT_WORKGROUP:
+                if (workgroupSize != 128 && workgroupSize != 256) {
+                    continue;
+                }
+                break;
+            case TT_SHARED:
+                if (workgroupSize != 256) {
+                    continue;
+                }
+                break;
+            case TT_TILED:
+                if (workgroupSize != 32) {
+                    continue;
+                }
+                break;
+            default:
+                assert(0);
+                break;
             }
 
             // For non-power of two tile sizes, round up the matrix size to
@@ -740,10 +937,10 @@ int main(int argc, char *argv[])
 
             MatrixDesc matrices[NUM_MATS];
 
-            createMatrixDesc(device, memoryProperties, matrices[MAT_A], cooperativeMatrixProps->AType, testCase.M, testCase.K);
-            createMatrixDesc(device, memoryProperties, matrices[MAT_B], cooperativeMatrixProps->AType, testCase.K, testCase.N);
-            createMatrixDesc(device, memoryProperties, matrices[MAT_C], cooperativeMatrixProps->ResultType, testCase.M, testCase.N);
-            createMatrixDesc(device, memoryProperties, matrices[MAT_D], cooperativeMatrixProps->ResultType, testCase.M, testCase.N);
+            createMatrixDesc(device, memoryProperties, matrices[MAT_A], AType, testCase.M, testCase.K);
+            createMatrixDesc(device, memoryProperties, matrices[MAT_B], AType, testCase.K, testCase.N);
+            createMatrixDesc(device, memoryProperties, matrices[MAT_C], ResultType, testCase.M, testCase.N);
+            createMatrixDesc(device, memoryProperties, matrices[MAT_D], ResultType, testCase.M, testCase.N);
 
             // Allocate buffer to hold device addresses for the four matrices
             VkBuffer paramBuffer;
@@ -870,6 +1067,9 @@ int main(int argc, char *argv[])
                 testCase.ANumRows,
                 testCase.BRowLen,
                 testCase.BNumRows,
+                workgroupSize, // invocations per workgroup
+                testCase.M,
+                testCase.N,
             };
 
 #if 0
@@ -897,6 +1097,9 @@ int main(int argc, char *argv[])
                 {15, sizeof(uint32_t) * 15, sizeof(uint32_t)},
                 {16, sizeof(uint32_t) * 16, sizeof(uint32_t)},
                 {17, sizeof(uint32_t) * 17, sizeof(uint32_t)},
+                {18, sizeof(uint32_t) * 18, sizeof(uint32_t)},
+                {19, sizeof(uint32_t) * 19, sizeof(uint32_t)},
+                {20, sizeof(uint32_t) * 20, sizeof(uint32_t)},
             };
 
             VkSpecializationInfo specInfo =
@@ -1017,7 +1220,7 @@ int main(int argc, char *argv[])
             uint64_t flops = 2ULL * (uint64_t)testCase.M * (uint64_t)testCase.N * (uint64_t)testCase.K * (uint64_t)repeatCount;
             double tflops = (double)flops / (double)(elapsedUs / 1000000.0) / (1000.0*1000.0*1000.0*1000.0);
 
-            printf("TILE_M=%d TILE_N=%d, TILE_K=%d BColMajor=%d ", testCase.TILE_M, testCase.TILE_N, testCase.TILE_K, testCase.BColMajor);
+            printf("TILE_M=%d TILE_N=%d, TILE_K=%d BColMajor=%d workgroupSize=%d ", testCase.TILE_M, testCase.TILE_N, testCase.TILE_K, testCase.BColMajor, workgroupSize);
             if (!correctness) {
                 printf("  %f TFlops\n", tflops);
             }
@@ -1107,6 +1310,8 @@ int main(int argc, char *argv[])
                 break;
             }
 
+        } // workgroupSize
+        } // TILE_K
         } // bcolmajor
         } // TILE_N_size
         } // TILE_M_size

@@ -1,6 +1,7 @@
 @echo off
 REM
-REM Copyright (c) 2019-2024, NVIDIA CORPORATION. All rights reserved.
+REM SPDX-FileCopyrightText: Copyright (c) 2019-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+REM SPDX-License-Identifier: MIT
 REM
 REM Permission is hereby granted, free of charge, to any person obtaining a
 REM copy of this software and associated documentation files (the "Software"),
@@ -21,6 +22,10 @@ REM FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 REM DEALINGS IN THE SOFTWARE.
 REM
 @echo on
+glslangValidator.exe --target-env spirv1.6 -DA_TYPE=float16_t -DC_TYPE=float16_t -V workgroup.comp -o workgroupfp16.spv
+glslangValidator.exe --target-env spirv1.6 -DA_TYPE=float16_t -DC_TYPE=float -V workgroup.comp -o workgroupfp32.spv
+glslangValidator.exe --target-env spirv1.6 -DA_TYPE=uint8_t -DC_TYPE=uint32_t -V workgroup.comp -o workgroupu8.spv
+glslangValidator.exe --target-env spirv1.6 -DA_TYPE=int8_t -DC_TYPE=int32_t -V workgroup.comp -o workgroups8.spv
 glslangValidator.exe --target-env spirv1.3 -DA_BITS=16 -DA_TYPE=float16_t -DC_BITS=16 -DC_TYPE=float16_t -V tiled.comp -o tiledfp16.spv
 glslangValidator.exe --target-env spirv1.3 -DA_BITS=16 -DA_TYPE=float16_t -DC_BITS=32 -DC_TYPE=float     -V tiled.comp -o tiledfp32.spv
 glslangValidator.exe --target-env spirv1.3 -DA_BITS=16 -DA_TYPE=float16_t -DC_BITS=16 -DC_TYPE=float16_t -V shmem.comp -o shmemfp16.spv
