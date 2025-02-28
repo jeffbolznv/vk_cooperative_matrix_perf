@@ -25,46 +25,28 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <vector>
 #include <chrono>
 #include <string.h>
 
 #include <vulkan/vulkan.h>
 
-#define VK_NV_COOPERATIVE_MATRIX_2_SPEC_VERSION 1
-#define VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME "VK_NV_cooperative_matrix2"
+#if !defined(VK_KHR_shader_bfloat16)
+#define VK_KHR_shader_bfloat16 1
+#define VK_KHR_SHADER_BFLOAT16_SPEC_VERSION                          1
+#define VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME                        "VK_KHR_shader_bfloat16"
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR ((VkStructureType)1000141000)
+#define VK_COMPONENT_TYPE_BFLOAT16_KHR                               ((VkComponentTypeKHR)1000141000)
 
-#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_FEATURES_NV ((VkStructureType)1000593000)
-#define VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_FLEXIBLE_DIMENSIONS_PROPERTIES_NV ((VkStructureType)1000593001)
-
-typedef struct VkPhysicalDeviceCooperativeMatrix2FeaturesNV {
-    VkStructureType    sType;
-    void*              pNext;
-    VkBool32           cooperativeMatrixWorkgroupScope;
-    VkBool32           cooperativeMatrixFlexibleDimensions;
-    VkBool32           cooperativeMatrixReductions;
-    VkBool32           cooperativeMatrixConversions;
-    VkBool32           cooperativeMatrixPerElementOperations;
-    VkBool32           cooperativeMatrixTensorAddressing;
-    VkBool32           cooperativeMatrixBlockLoads;
-} VkPhysicalDeviceCooperativeMatrix2FeaturesNV;
-
-typedef struct VkCooperativeMatrixFlexibleDimensionsPropertiesNV {
-    VkStructureType       sType;
-    void*                 pNext;
-    uint32_t              MGranularity;
-    uint32_t              NGranularity;
-    uint32_t              KGranularity;
-    VkComponentTypeKHR    AType;
-    VkComponentTypeKHR    BType;
-    VkComponentTypeKHR    CType;
-    VkComponentTypeKHR    ResultType;
-    VkBool32              saturatingAccumulation;
-    VkScopeKHR            scope;
-    uint32_t              workgroupInvocations;
-} VkCooperativeMatrixFlexibleDimensionsPropertiesNV;
-
-typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV)(VkPhysicalDevice physicalDevice, uint32_t* pPropertyCount, VkCooperativeMatrixFlexibleDimensionsPropertiesNV* pProperties);
+typedef struct VkPhysicalDeviceShaderBfloat16FeaturesKHR {
+    VkStructureType                       sType;
+    void*                                 pNext;
+    VkBool32                              shaderBFloat16Type;
+    VkBool32                              shaderBFloat16DotProduct;
+    VkBool32                              shaderBFloat16CooperativeMatrix;
+} VkPhysicalDeviceShaderBfloat16FeaturesKHR;
+#endif
 
 using std::vector;
 
@@ -109,22 +91,24 @@ enum TestType
     TT_COUNT,
 };
 
-struct {
+struct ComponentTypeInfo {
     const char *typeName;
     uint32_t bits;
-} componentTypeInfo[] =
+};
+static std::map<VkComponentTypeKHR, ComponentTypeInfo> componentTypeInfo
 {
-    { "float16_t",  16 },
-    { "float32_t",  32 },
-    { "float64_t",  64 },
-    { "int8_t",     8 },
-    { "int16_t",    16 },
-    { "int32_t",    32 },
-    { "int64_t",    64 },
-    { "uint8_t",    8 },
-    { "uint16_t",   16 },
-    { "uint32_t",   32 },
-    { "uint64_t",   64 },
+    {VK_COMPONENT_TYPE_FLOAT16_KHR, { "float16_t",  16 }},
+    {VK_COMPONENT_TYPE_FLOAT32_KHR, { "float32_t",  32 }},
+    {VK_COMPONENT_TYPE_FLOAT64_KHR, { "float64_t",  64 }},
+    {VK_COMPONENT_TYPE_SINT8_KHR,   { "int8_t",     8 }},
+    {VK_COMPONENT_TYPE_SINT16_KHR,  { "int16_t",    16 }},
+    {VK_COMPONENT_TYPE_SINT32_KHR,  { "int32_t",    32 }},
+    {VK_COMPONENT_TYPE_SINT64_KHR,  { "int64_t",    64 }},
+    {VK_COMPONENT_TYPE_UINT8_KHR,   { "uint8_t",    8 }},
+    {VK_COMPONENT_TYPE_UINT16_KHR,  { "uint16_t",   16 }},
+    {VK_COMPONENT_TYPE_UINT32_KHR,  { "uint32_t",   32 }},
+    {VK_COMPONENT_TYPE_UINT64_KHR,  { "uint64_t",   64 }},
+    {VK_COMPONENT_TYPE_BFLOAT16_KHR,{ "bfloat16_t", 16 }},
 };
 
 struct TestCase
@@ -183,6 +167,7 @@ struct MatrixDesc
         case VK_COMPONENT_TYPE_FLOAT16_KHR:
         case VK_COMPONENT_TYPE_FLOAT32_KHR:
         case VK_COMPONENT_TYPE_FLOAT64_KHR:
+        case VK_COMPONENT_TYPE_BFLOAT16_KHR:
             return true;
         }
     }
@@ -195,20 +180,98 @@ struct MatrixDesc
         }
         else
         {
-            uint32_t asInt = *(uint32_t *)&value;
-            int sign = (asInt & 0x80000000) >> 31;
-            int exp = ((asInt & 0x7f800000) >> 23) - 127;
-            int mantissa = (asInt & 0x7FFFFF);
-
-            sign = sign << 15;
-            exp = (exp + 15) << 10;
-            mantissa = mantissa >> (23 - 10);
-
-            if (asInt != 0) {
-                asInt = sign | exp | mantissa;
+            uint32_t expBits, manBits, byteSize;
+            switch (dataType) {
+            case VK_COMPONENT_TYPE_FLOAT16_KHR:
+                expBits = 5;
+                manBits = 10;
+                byteSize = 2;
+                break;
+            case VK_COMPONENT_TYPE_BFLOAT16_KHR:
+                expBits = 8;
+                manBits = 7;
+                byteSize = 2;
+                break;
+            default:
+                assert(0);
+                break;
             }
 
-            ((uint16_t *)ptr)[i] = asInt;
+            uint32_t signBit = manBits + expBits;
+
+	        uint32_t intVal = *(uint32_t *)(&value);
+            uint32_t sign = intVal & 0x80000000;
+            int32_t exp = intVal & 0x7F800000;
+            uint32_t mantissa = intVal & 0x007FFFFF;
+            if (exp == 0x7F800000) {
+                if (mantissa != 0) {
+                    exp = (1<<expBits) - 1;
+                    mantissa = (1<<manBits) - 1;
+                    sign = 0;
+                } else {
+                    exp = (1<<expBits) - 1;
+                    mantissa = 0;
+                }
+            } else {
+
+                exp >>= 23;
+                exp -= (1<<(8-1)) - 1;
+                exp += (1<<(expBits-1)) - 1;
+
+                if (exp <= 0) {
+                    // If the denorm is too small, flush it to zero. Otherwise, add a leading one.
+                    if (-exp > (int32_t)manBits) {
+                        value = 0;
+                        exp = 0;
+                    } else {
+                        mantissa |= 1<<23;
+                    }
+                    // RTNE
+                    if ((mantissa & (1<<(24 - manBits - exp)))) {
+                        mantissa++;
+                    }
+                    mantissa += (1<<(23 - manBits - exp)) - 1;
+
+                    // Shift way the LSBs and the negative exponent
+                    mantissa >>= 23 - manBits;
+                    mantissa >>= 1-exp;
+                    exp = 0;
+                } else {
+                    // RTNE
+                    if ((mantissa & (1<<(23 - manBits)))) {
+                        mantissa++;
+                    }
+                    mantissa += (1<<(22 - manBits)) - 1;
+                    if (mantissa & (1<<23)) {
+                        exp += 1;
+                        mantissa = 0;
+                    }
+                    mantissa >>= 23 - manBits;
+                }
+
+                if (exp >= (1<<expBits)-1) {
+                    exp = (1<<expBits) - 1;
+                    mantissa = 0;
+                }
+            }
+            sign >>= 31;
+            sign <<= signBit;
+            exp <<= manBits;
+            uint32_t result = sign | exp | mantissa;
+            assert(result < (1ULL << (byteSize*8)));
+            if (value == 0) {
+                result = sign;
+            }
+            switch (byteSize) {
+            default:
+                // fallthrough
+            case 1:
+                ((uint8_t *)ptr)[i] = (uint8_t)result;
+                break;
+            case 2:
+                ((uint16_t *)ptr)[i] = (uint16_t)result;
+                break;
+            }
         }
     }
 
@@ -220,20 +283,71 @@ struct MatrixDesc
         }
         else
         {
-            uint32_t asInt = ((uint16_t *)ptr)[i];
-            int sign = (asInt & 0x8000) >> 15;
-            int exp = ((asInt & 0x7c00) >> 10) - 15;
-            int mantissa = (asInt & 0x3FF);
-
-            sign = sign << 31;
-            exp = (exp + 127) << 23;
-            mantissa = mantissa << (23 - 10);
-
-            if (asInt != 0) {
-                asInt = sign | exp | mantissa;
+            uint32_t expBits, manBits, byteSize;
+            switch (dataType) {
+            case VK_COMPONENT_TYPE_FLOAT16_KHR:
+                expBits = 5;
+                manBits = 10;
+                byteSize = 2;
+                break;
+            case VK_COMPONENT_TYPE_BFLOAT16_KHR:
+                expBits = 8;
+                manBits = 7;
+                byteSize = 2;
+                break;
+            default:
+                assert(0);
+                break;
             }
 
-            return *(float *)&asInt;
+            uint32_t intVal = 0;
+            switch (byteSize) {
+            default:
+                // fallthrough
+            case 1:
+                intVal = ((uint8_t const *)ptr)[i];
+                break;
+            case 2:
+                intVal = ((uint16_t const *)ptr)[i];
+                break;
+            }
+
+            uint32_t signBit = manBits + expBits;
+            uint32_t signMask = 1 << signBit;
+            uint32_t expMask = (1 << expBits) - 1;
+
+            uint32_t sign = intVal & signMask;
+            uint32_t mantissa = intVal & ((1 << manBits) - 1);
+            int32_t exp = (intVal >> manBits) & expMask;
+
+            if (exp == expMask) {
+                // NaN or +/-infinity, depending on mantissa value
+                exp = 0xFF;
+                if (mantissa != 0) {
+                    mantissa = 0x7FFFFF;
+                } else {
+                    mantissa = 0;
+                }
+            } else {
+                if (exp == 0 && mantissa != 0) {
+                    // Shift the denorm value until it has a leading one, adjusting the exponent.
+                    // Then clear the leading one.
+                    while ((mantissa & (1 << manBits)) == 0) {
+                        mantissa <<= 1;
+                        exp--;
+                    }
+                    exp++;
+                    mantissa &= ~(1 << manBits);
+                }
+                exp -= (1<<(expBits-1)) - 1;
+                exp += (1<<(8-1)) - 1;
+                mantissa <<= 23 - manBits;
+            }
+            exp <<= 23;
+            sign <<= 31 - signBit;
+            uint32_t result = sign | exp | mantissa;
+            float ret = (intVal == 0 || intVal == signMask) ? 0.0f : *(float const *)(&result);
+            return ret;
         }
     }
 
@@ -399,6 +513,7 @@ int main(int argc, char *argv[])
     int physicalDeviceIndex = -1;
 
     bool coopmat2Supported = false;
+    bool bfloat16Supported = false;
 
     for (uint32_t i = 0; i < numPhysicalDevices; ++i) {
 
@@ -420,6 +535,10 @@ int main(int argc, char *argv[])
             if (strcmp(extensions[j].extensionName, VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME) == 0) {
                 printf("%s supported\n", extensions[j].extensionName);
                 coopmat2Supported = true;
+            }
+            if (strcmp(extensions[j].extensionName, VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME) == 0) {
+                printf("%s supported\n", extensions[j].extensionName);
+                bfloat16Supported = true;
             }
         }
         if (physicalDeviceIndex != -1) {
@@ -514,12 +633,22 @@ int main(int argc, char *argv[])
         VK_FALSE, // cooperativeMatrixRobustBufferAccess
     };
 
+    VkPhysicalDeviceShaderBfloat16FeaturesKHR bfloat16Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR };
+
+    if (bfloat16Supported) {
+        bfloat16Features.shaderBFloat16Type = VK_TRUE;
+        bfloat16Features.shaderBFloat16CooperativeMatrix = VK_TRUE;
+        bfloat16Features.pNext = coopMatFeatures.pNext;
+        coopMatFeatures.pNext = &bfloat16Features;
+    }
+
     VkPhysicalDeviceCooperativeMatrix2FeaturesNV coopmat2Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_FEATURES_NV };
 
-    if (coopmat2Supported){
+    if (coopmat2Supported) {
         coopmat2Features.cooperativeMatrixWorkgroupScope = VK_TRUE;
         coopmat2Features.cooperativeMatrixFlexibleDimensions = VK_TRUE;
         coopmat2Features.cooperativeMatrixTensorAddressing = VK_TRUE;
+        coopmat2Features.pNext = coopMatFeatures.pNext;
         coopMatFeatures.pNext = &coopmat2Features;
     }
 
@@ -539,6 +668,9 @@ int main(int argc, char *argv[])
     std::vector<const char *> enabledDeviceExtensions = { VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, };
     if (coopmat2Supported) {
         enabledDeviceExtensions.push_back(VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME);
+    }
+    if (bfloat16Supported) {
+        enabledDeviceExtensions.push_back(VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME);
     }
 
     VkDeviceCreateInfo deviceCreateInfo = {
@@ -721,14 +853,16 @@ int main(int argc, char *argv[])
 
         if (AType != VK_COMPONENT_TYPE_UINT8_KHR &&
             AType != VK_COMPONENT_TYPE_SINT8_KHR &&
-            AType != VK_COMPONENT_TYPE_FLOAT16_KHR) {
+            AType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
+            AType != VK_COMPONENT_TYPE_BFLOAT16_KHR) {
             printf("\nunsupported AType %d\n", AType);
             continue;
         }
 
         if (BType != VK_COMPONENT_TYPE_UINT8_KHR &&
             BType != VK_COMPONENT_TYPE_SINT8_KHR &&
-            BType != VK_COMPONENT_TYPE_FLOAT16_KHR) {
+            BType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
+            BType != VK_COMPONENT_TYPE_BFLOAT16_KHR) {
             printf("\nunsupported BType %d\n", BType);
             continue;
         }
@@ -752,6 +886,7 @@ int main(int argc, char *argv[])
         std::string suffix =
             AType == VK_COMPONENT_TYPE_UINT8_KHR ? "u8" :
             AType == VK_COMPONENT_TYPE_SINT8_KHR ? "s8" :
+            AType == VK_COMPONENT_TYPE_BFLOAT16_KHR ? "bf16" :
             ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR ? "fp16" : "fp32";
 
         std::string fileName;

@@ -26,11 +26,10 @@
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_KHR_memory_scope_semantics : enable
 #extension GL_KHR_cooperative_matrix : enable
-#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
-#extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
-#extension GL_EXT_shader_explicit_arithmetic_types_int32 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
 #extension GL_EXT_buffer_reference : enable
 #extension GL_EXT_control_flow_attributes : enable
+#extension GL_EXT_bfloat16 : enable
 
 // M/N/K values filled out at pipeline creation time
 layout(constant_id = 0) const uint lM = 1;
@@ -57,7 +56,6 @@ layout(constant_id = 17)const uint B_NUM_ROWS = 1;
 // #defines set on command line:
 // A_BITS = 8 or 16 or 32 (bits per component)
 // A_TYPE = e.g. float or float16_t
-// C_BITS = 8 or 16 or 32 (bits per component)
 // C_TYPE = e.g. float or float16_t
 
 // input bindings for A/B/C and the output
