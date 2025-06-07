@@ -636,10 +636,16 @@ int main(int argc, char *argv[])
     VkPhysicalDeviceShaderBfloat16FeaturesKHR bfloat16Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR };
 
     if (bfloat16Supported) {
-        bfloat16Features.shaderBFloat16Type = VK_TRUE;
-        bfloat16Features.shaderBFloat16CooperativeMatrix = VK_TRUE;
-        bfloat16Features.pNext = coopMatFeatures.pNext;
-        coopMatFeatures.pNext = &bfloat16Features;
+        // The specification allows only one of bfloat16 dot and coopmat to be supported, need to check if vendor really support bfloat16 coopmat.
+        VkPhysicalDeviceFeatures2 physicalFeatures2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &bfloat16Features };
+        PFN_vkGetPhysicalDeviceFeatures2 pfn_vkGetPhysicalDeviceFeatures2 =
+            (PFN_vkGetPhysicalDeviceFeatures2)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2");
+        pfn_vkGetPhysicalDeviceFeatures2(physicalDevice, &physicalFeatures2);
+
+        if (bfloat16Features.shaderBFloat16CooperativeMatrix == VK_TRUE) {
+            bfloat16Features.pNext = coopMatFeatures.pNext;
+            coopMatFeatures.pNext = &bfloat16Features;
+        }
     }
 
     VkPhysicalDeviceCooperativeMatrix2FeaturesNV coopmat2Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_FEATURES_NV };
