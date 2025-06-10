@@ -38,6 +38,8 @@
 #define VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME                        "VK_KHR_shader_bfloat16"
 #define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR ((VkStructureType)1000141000)
 #define VK_COMPONENT_TYPE_BFLOAT16_KHR                               ((VkComponentTypeKHR)1000141000)
+#define VK_COMPONENT_TYPE_FLOAT_E4M3_NV                              ((VkComponentTypeKHR)1000491002)
+#define VK_COMPONENT_TYPE_FLOAT_E5M2_NV                              ((VkComponentTypeKHR)1000491003)
 
 typedef struct VkPhysicalDeviceShaderBfloat16FeaturesKHR {
     VkStructureType                       sType;
@@ -46,6 +48,20 @@ typedef struct VkPhysicalDeviceShaderBfloat16FeaturesKHR {
     VkBool32                              shaderBFloat16DotProduct;
     VkBool32                              shaderBFloat16CooperativeMatrix;
 } VkPhysicalDeviceShaderBfloat16FeaturesKHR;
+#endif
+
+#if !defined(VK_EXT_shader_float8)
+#define VK_EXT_shader_float8 1
+#define VK_EXT_SHADER_FLOAT8_SPEC_VERSION                            1
+#define VK_EXT_SHADER_FLOAT8_EXTENSION_NAME                          "VK_EXT_shader_float8"
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT ((VkStructureType)1000567000)
+
+typedef struct VkPhysicalDeviceShaderFloat8FeaturesEXT {
+    VkStructureType                       sType;
+    void*                                 pNext;
+    VkBool32                              shaderFloat8;
+    VkBool32                              shaderFloat8CooperativeMatrix;
+} VkPhysicalDeviceShaderFloat8FeaturesEXT;
 #endif
 
 using std::vector;
@@ -109,6 +125,8 @@ static std::map<VkComponentTypeKHR, ComponentTypeInfo> componentTypeInfo
     {VK_COMPONENT_TYPE_UINT32_KHR,  { "uint32_t",   32 }},
     {VK_COMPONENT_TYPE_UINT64_KHR,  { "uint64_t",   64 }},
     {VK_COMPONENT_TYPE_BFLOAT16_KHR,{ "bfloat16_t", 16 }},
+    {VK_COMPONENT_TYPE_FLOAT_E5M2_NV,{ "floate5m2_t", 8 }},
+    {VK_COMPONENT_TYPE_FLOAT_E4M3_NV,{ "floate4m3_t", 8 }},
 };
 
 struct TestCase
@@ -168,6 +186,8 @@ struct MatrixDesc
         case VK_COMPONENT_TYPE_FLOAT32_KHR:
         case VK_COMPONENT_TYPE_FLOAT64_KHR:
         case VK_COMPONENT_TYPE_BFLOAT16_KHR:
+        case VK_COMPONENT_TYPE_FLOAT_E5M2_NV:
+        case VK_COMPONENT_TYPE_FLOAT_E4M3_NV:
             return true;
         }
     }
@@ -191,6 +211,16 @@ struct MatrixDesc
                 expBits = 8;
                 manBits = 7;
                 byteSize = 2;
+                break;
+            case VK_COMPONENT_TYPE_FLOAT_E5M2_NV:
+                expBits = 5;
+                manBits = 2;
+                byteSize = 1;
+                break;
+            case VK_COMPONENT_TYPE_FLOAT_E4M3_NV:
+                expBits = 4;
+                manBits = 3;
+                byteSize = 1;
                 break;
             default:
                 assert(0);
@@ -294,6 +324,16 @@ struct MatrixDesc
                 expBits = 8;
                 manBits = 7;
                 byteSize = 2;
+                break;
+            case VK_COMPONENT_TYPE_FLOAT_E5M2_NV:
+                expBits = 5;
+                manBits = 2;
+                byteSize = 1;
+                break;
+            case VK_COMPONENT_TYPE_FLOAT_E4M3_NV:
+                expBits = 4;
+                manBits = 3;
+                byteSize = 1;
                 break;
             default:
                 assert(0);
@@ -514,6 +554,7 @@ int main(int argc, char *argv[])
 
     bool coopmat2Supported = false;
     bool bfloat16Supported = false;
+    bool float8Supported = false;
 
     for (uint32_t i = 0; i < numPhysicalDevices; ++i) {
 
@@ -539,6 +580,10 @@ int main(int argc, char *argv[])
             if (strcmp(extensions[j].extensionName, VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME) == 0) {
                 printf("%s supported\n", extensions[j].extensionName);
                 bfloat16Supported = true;
+            }
+            if (strcmp(extensions[j].extensionName, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME) == 0) {
+                printf("%s supported\n", extensions[j].extensionName);
+                float8Supported = true;
             }
         }
         if (physicalDeviceIndex != -1) {
@@ -633,18 +678,31 @@ int main(int argc, char *argv[])
         VK_FALSE, // cooperativeMatrixRobustBufferAccess
     };
 
+    PFN_vkGetPhysicalDeviceFeatures2 pfn_vkGetPhysicalDeviceFeatures2 =
+        (PFN_vkGetPhysicalDeviceFeatures2)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2");
+
     VkPhysicalDeviceShaderBfloat16FeaturesKHR bfloat16Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR };
 
     if (bfloat16Supported) {
         // The specification allows only one of bfloat16 dot and coopmat to be supported, need to check if vendor really support bfloat16 coopmat.
         VkPhysicalDeviceFeatures2 physicalFeatures2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &bfloat16Features };
-        PFN_vkGetPhysicalDeviceFeatures2 pfn_vkGetPhysicalDeviceFeatures2 =
-            (PFN_vkGetPhysicalDeviceFeatures2)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2");
         pfn_vkGetPhysicalDeviceFeatures2(physicalDevice, &physicalFeatures2);
 
         if (bfloat16Features.shaderBFloat16CooperativeMatrix == VK_TRUE) {
             bfloat16Features.pNext = coopMatFeatures.pNext;
             coopMatFeatures.pNext = &bfloat16Features;
+        }
+    }
+
+    VkPhysicalDeviceShaderFloat8FeaturesEXT float8Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT };
+
+    if (float8Supported) {
+        VkPhysicalDeviceFeatures2 physicalFeatures2 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &float8Features };
+        pfn_vkGetPhysicalDeviceFeatures2(physicalDevice, &physicalFeatures2);
+
+        if (float8Features.shaderFloat8CooperativeMatrix == VK_TRUE) {
+            float8Features.pNext = coopMatFeatures.pNext;
+            coopMatFeatures.pNext = &float8Features;
         }
     }
 
@@ -677,6 +735,9 @@ int main(int argc, char *argv[])
     }
     if (bfloat16Supported) {
         enabledDeviceExtensions.push_back(VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME);
+    }
+    if (float8Supported) {
+        enabledDeviceExtensions.push_back(VK_EXT_SHADER_FLOAT8_EXTENSION_NAME);
     }
 
     VkDeviceCreateInfo deviceCreateInfo = {
@@ -860,7 +921,9 @@ int main(int argc, char *argv[])
         if (AType != VK_COMPONENT_TYPE_UINT8_KHR &&
             AType != VK_COMPONENT_TYPE_SINT8_KHR &&
             AType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
-            AType != VK_COMPONENT_TYPE_BFLOAT16_KHR) {
+            AType != VK_COMPONENT_TYPE_BFLOAT16_KHR &&
+            AType != VK_COMPONENT_TYPE_FLOAT_E5M2_NV &&
+            AType != VK_COMPONENT_TYPE_FLOAT_E4M3_NV) {
             printf("\nunsupported AType %d\n", AType);
             continue;
         }
@@ -868,7 +931,9 @@ int main(int argc, char *argv[])
         if (BType != VK_COMPONENT_TYPE_UINT8_KHR &&
             BType != VK_COMPONENT_TYPE_SINT8_KHR &&
             BType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
-            BType != VK_COMPONENT_TYPE_BFLOAT16_KHR) {
+            BType != VK_COMPONENT_TYPE_BFLOAT16_KHR &&
+            BType != VK_COMPONENT_TYPE_FLOAT_E5M2_NV &&
+            BType != VK_COMPONENT_TYPE_FLOAT_E4M3_NV) {
             printf("\nunsupported BType %d\n", BType);
             continue;
         }
@@ -889,11 +954,19 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        std::string suffix =
+        std::string typeStrA =
             AType == VK_COMPONENT_TYPE_UINT8_KHR ? "u8" :
             AType == VK_COMPONENT_TYPE_SINT8_KHR ? "s8" :
             AType == VK_COMPONENT_TYPE_BFLOAT16_KHR ? "bf16" :
-            ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR ? "fp16" : "fp32";
+            AType == VK_COMPONENT_TYPE_FLOAT_E5M2_NV ? "e5m2" :
+            AType == VK_COMPONENT_TYPE_FLOAT_E4M3_NV ? "e4m3" :
+                                                       "fp16";
+
+        std::string typeStrR =
+            ResultType == VK_COMPONENT_TYPE_UINT32_KHR ? "u32" :
+            ResultType == VK_COMPONENT_TYPE_SINT32_KHR ? "s32" :
+            ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR ? "fp16" :
+                                                          "fp32";
 
         std::string fileName;
         switch (tt) {
@@ -909,7 +982,7 @@ int main(int argc, char *argv[])
             fileName = std::string("shaders/tiled");
             break;
         }
-        fileName = fileName + suffix + ".spv";
+        fileName = fileName + typeStrA + "_" + typeStrR + ".spv";
 
         printf("\nshader: %s\n", fileName.c_str());
 
