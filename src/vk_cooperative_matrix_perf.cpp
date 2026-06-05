@@ -990,8 +990,8 @@ int main(int argc, char *argv[])
         std::ifstream spirvfile(fileName.c_str(), std::ios::binary | std::ios::ate);
         std::streampos spirvsize = spirvfile.tellg();
         if ((int)spirvsize == -1) {
-            printf("%s not found!\n", fileName.c_str());
-            throw;
+            printf("SKIP: %s not found (no precompiled shader for this advertised combo)\n", fileName.c_str());
+            continue;
         }
         spirvfile.seekg(0, std::ios::beg);
 
