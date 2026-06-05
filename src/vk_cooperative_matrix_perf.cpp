@@ -728,6 +728,8 @@ int main(int argc, char *argv[])
 
     VkPhysicalDeviceVulkan13Features vulkan13Features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &vulkan12Features };
     vulkan13Features.maintenance4 = VK_TRUE;
+    vulkan13Features.subgroupSizeControl = VK_TRUE;
+    vulkan13Features.computeFullSubgroups = VK_TRUE;
 
     std::vector<const char *> enabledDeviceExtensions = { VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, };
     if (coopmat2Supported) {
