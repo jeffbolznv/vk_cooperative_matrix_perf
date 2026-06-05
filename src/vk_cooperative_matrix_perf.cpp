@@ -24,6 +24,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 #include <fstream>
 #include <map>
 #include <vector>
@@ -72,8 +73,8 @@ using std::vector;
 
 #define CHECK_RESULT(r) do {    \
     if ((r) != VK_SUCCESS) {    \
-        printf("result = %d, line = %d\n", (r), __LINE__);  \
-        throw;  \
+        fprintf(stderr, "CHECK_RESULT failed: VkResult %d at %s:%d\n", (r), __FILE__, __LINE__);  \
+        throw std::runtime_error("Vulkan call failed");  \
     }   \
 } while (0)
 
