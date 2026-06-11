@@ -1123,6 +1123,24 @@ int main(int argc, char *argv[])
                 if (workgroupSize != 128 && workgroupSize != 256) {
                     continue;
                 }
+                // The same type may be advertised at several workgroup sizes as
+                // separate flexible properties; only run the advertised ones.
+                {
+                    bool supported = false;
+                    for (uint32_t j = 0; j < numCooperativeMatrixFlexibleDimensionsProperties; ++j) {
+                        const VkCooperativeMatrixFlexibleDimensionsPropertiesNV *other = &cooperativeMatrixFlexibleDimensionsProperties[j];
+                        if (other->scope == VK_SCOPE_WORKGROUP_KHR &&
+                            other->AType == AType && other->BType == BType &&
+                            other->CType == CType && other->ResultType == ResultType &&
+                            other->workgroupInvocations == workgroupSize) {
+                            supported = true;
+                            break;
+                        }
+                    }
+                    if (!supported) {
+                        continue;
+                    }
+                }
                 break;
             case TT_SHARED:
                 if (workgroupSize != 256) {
