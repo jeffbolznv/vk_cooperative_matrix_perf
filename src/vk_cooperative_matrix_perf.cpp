@@ -1406,6 +1406,17 @@ int main(int argc, char *argv[])
 
             for (uint32_t i = 0; i < repeatCount; ++i) {
                 vkCmdDispatch(commandBuffers[1], testCase.N / testCase.TILE_N, testCase.M / testCase.TILE_M, 1);
+                // pipeline barrier. vulkan queue will overlap dispatches otherwise and skew 
+                // single gemm perf data
+                if (i + 1 < repeatCount) {
+                    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                    vkCmdPipelineBarrier(commandBuffers[1],
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        0, 1, &mb, 0, nullptr, 0, nullptr);
+                }
             }
 
             result = vkEndCommandBuffer(commandBuffers[1]);
