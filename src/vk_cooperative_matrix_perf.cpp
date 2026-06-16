@@ -199,7 +199,6 @@ enum TestType
 {
     TT_WORKGROUP = 0,
     TT_SHARED = 1,
-    TT_TILED = 2,
     TT_COUNT,
 };
 
@@ -1183,9 +1182,6 @@ int main(int argc, char *argv[])
         case TT_SHARED:
             fileName = std::string("shaders/shmem");
             break;
-        case TT_TILED:
-            fileName = std::string("shaders/tiled");
-            break;
         }
         fileName = fileName + typeStrA + "_" + typeStrR + ".spv";
 
@@ -1244,13 +1240,11 @@ int main(int argc, char *argv[])
         SubTestParams subTestParams[] = {
             { 256, 256, 128, 128}, // TT_WORKGROUP
             { 256, 256, 128, 128 }, // TT_SHARED
-            { 128, 128, MSize, NSize }, // TT_TILED
         };
 
         SubTestParams *params = &subTestParams[tt];
 
         for (unsigned int TILE_M_size = params->granularityTILE_M; TILE_M_size <= params->maxTILE_M; TILE_M_size += params->granularityTILE_M) {
-        double maxPerfThisIter = 0;
         for (unsigned int TILE_N_size = params->granularityTILE_N; TILE_N_size <= params->maxTILE_N; TILE_N_size += params->granularityTILE_N) {
         for (unsigned int bcolmajor = 0; bcolmajor <= 1; ++bcolmajor) {
         for (unsigned int TILE_K = 16; TILE_K <= 64; TILE_K *= 2) {
@@ -1346,11 +1340,6 @@ int main(int argc, char *argv[])
                 break;
             case TT_SHARED:
                 if (workgroupSize != 256) {
-                    continue;
-                }
-                break;
-            case TT_TILED:
-                if (workgroupSize != 32) {
                     continue;
                 }
                 break;
@@ -1747,16 +1736,6 @@ int main(int argc, char *argv[])
                 destroyMatrixDesc(device, matrices[i]);
             }
             vkDestroyPipeline(device, pipeline, NULL);
-
-            if (maxPerfThisIter < tflops) {
-                maxPerfThisIter = tflops;
-            }
-            // Stop this iteration (increasing tile size) if we've gotten to
-            // the point where performance is decreasing. This usually means
-            // the tile no longer fits in register file.
-            if (!correctness && tflops < maxPerfThisIter / 2 && tt == TT_TILED) {
-                break;
-            }
 
         } // workgroupSize
         } // TILE_K
