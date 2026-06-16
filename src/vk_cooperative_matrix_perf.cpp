@@ -803,6 +803,29 @@ int main(int argc, char *argv[])
     }
     VkPhysicalDevice physicalDevice = physicalDevices[physicalDeviceIndex];
 
+    VkPhysicalDeviceSubgroupSizeControlProperties subgroupSizeControlProperties = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES,
+        NULL,
+    };
+    VkPhysicalDeviceProperties2 physicalDeviceProperties2 = {
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        &subgroupSizeControlProperties,
+    };
+    PFN_vkGetPhysicalDeviceProperties2 pfn_vkGetPhysicalDeviceProperties2 =
+        (PFN_vkGetPhysicalDeviceProperties2)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2");
+    if (!pfn_vkGetPhysicalDeviceProperties2) {
+        pfn_vkGetPhysicalDeviceProperties2 =
+            (PFN_vkGetPhysicalDeviceProperties2)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2KHR");
+    }
+    pfn_vkGetPhysicalDeviceProperties2(physicalDevice, &physicalDeviceProperties2);
+
+    uint32_t requiredSubgroupSize = 32;
+    if (requiredSubgroupSize < subgroupSizeControlProperties.minSubgroupSize ||
+        requiredSubgroupSize > subgroupSizeControlProperties.maxSubgroupSize) {
+        requiredSubgroupSize = subgroupSizeControlProperties.minSubgroupSize;
+    }
+    printf("using required subgroup size %u\n", requiredSubgroupSize);
+
 
     VkPhysicalDeviceMemoryProperties memoryProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
@@ -1339,7 +1362,7 @@ int main(int argc, char *argv[])
                 }
                 break;
             case TT_SHARED:
-                if (workgroupSize != 256) {
+                if (workgroupSize != requiredSubgroupSize * 8) {
                     continue;
                 }
                 break;
@@ -1496,6 +1519,7 @@ int main(int argc, char *argv[])
                 workgroupSize, // invocations per workgroup
                 testCase.M,
                 testCase.N,
+                requiredSubgroupSize,
             };
 
 #if 0
@@ -1526,11 +1550,12 @@ int main(int argc, char *argv[])
                 {18, sizeof(uint32_t) * 18, sizeof(uint32_t)},
                 {19, sizeof(uint32_t) * 19, sizeof(uint32_t)},
                 {20, sizeof(uint32_t) * 20, sizeof(uint32_t)},
+                {21, sizeof(uint32_t) * 21, sizeof(uint32_t)},
             };
 
             VkSpecializationInfo specInfo =
             {
-                ARRAY_LENGTH(specData),
+                ARRAY_LENGTH(entries),
                 entries,
                 sizeof(specData),
                 specData,
@@ -1539,7 +1564,7 @@ int main(int argc, char *argv[])
             VkPipelineShaderStageRequiredSubgroupSizeCreateInfo subgroupSizeCreateInfo = {
                 VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
                 NULL,
-                32,
+                requiredSubgroupSize,
             };
 
             VkPipelineShaderStageCreateInfo shaderCreateInfo = {
