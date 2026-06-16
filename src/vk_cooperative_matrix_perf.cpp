@@ -65,6 +65,55 @@ typedef struct VkPhysicalDeviceShaderFloat8FeaturesEXT {
 } VkPhysicalDeviceShaderFloat8FeaturesEXT;
 #endif
 
+#if !defined(VK_NV_cooperative_matrix2)
+#define VK_NV_cooperative_matrix2 1
+#define VK_NV_COOPERATIVE_MATRIX_2_SPEC_VERSION 1
+#define VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME "VK_NV_cooperative_matrix2"
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_FEATURES_NV ((VkStructureType)1000593000)
+#define VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_FLEXIBLE_DIMENSIONS_PROPERTIES_NV ((VkStructureType)1000593001)
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_2_PROPERTIES_NV ((VkStructureType)1000593002)
+
+typedef struct VkCooperativeMatrixFlexibleDimensionsPropertiesNV {
+    VkStructureType       sType;
+    void*                 pNext;
+    uint32_t              MGranularity;
+    uint32_t              NGranularity;
+    uint32_t              KGranularity;
+    VkComponentTypeKHR    AType;
+    VkComponentTypeKHR    BType;
+    VkComponentTypeKHR    CType;
+    VkComponentTypeKHR    ResultType;
+    VkBool32              saturatingAccumulation;
+    VkScopeKHR            scope;
+    uint32_t              workgroupInvocations;
+} VkCooperativeMatrixFlexibleDimensionsPropertiesNV;
+
+typedef struct VkPhysicalDeviceCooperativeMatrix2FeaturesNV {
+    VkStructureType    sType;
+    void*              pNext;
+    VkBool32           cooperativeMatrixWorkgroupScope;
+    VkBool32           cooperativeMatrixFlexibleDimensions;
+    VkBool32           cooperativeMatrixReductions;
+    VkBool32           cooperativeMatrixConversions;
+    VkBool32           cooperativeMatrixPerElementOperations;
+    VkBool32           cooperativeMatrixTensorAddressing;
+    VkBool32           cooperativeMatrixBlockLoads;
+} VkPhysicalDeviceCooperativeMatrix2FeaturesNV;
+
+typedef struct VkPhysicalDeviceCooperativeMatrix2PropertiesNV {
+    VkStructureType    sType;
+    void*              pNext;
+    uint32_t           cooperativeMatrixWorkgroupScopeMaxWorkgroupSize;
+    uint32_t           cooperativeMatrixFlexibleDimensionsMaxDimension;
+    uint32_t           cooperativeMatrixWorkgroupScopeReservedSharedMemory;
+} VkPhysicalDeviceCooperativeMatrix2PropertiesNV;
+
+typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV)(
+    VkPhysicalDevice physicalDevice,
+    uint32_t* pPropertyCount,
+    VkCooperativeMatrixFlexibleDimensionsPropertiesNV* pProperties);
+#endif
+
 using std::vector;
 
 #define ARRAY_LENGTH(x) (sizeof(x) / sizeof(x[0]))
@@ -77,6 +126,52 @@ using std::vector;
         throw std::runtime_error("Vulkan call failed");  \
     }   \
 } while (0)
+
+static void printUsage(const char *programName)
+{
+    printf("usage: %s [--correctness] [--device N] [--list-devices] [--dump-properties]\n\n", programName);
+}
+
+struct DeviceExtensionSupport
+{
+    bool cooperativeMatrix;
+    bool cooperativeMatrix2;
+    bool bfloat16;
+    bool float8;
+};
+
+static DeviceExtensionSupport getDeviceExtensionSupport(VkPhysicalDevice physicalDevice)
+{
+    DeviceExtensionSupport support = {};
+    VkResult result;
+
+    uint32_t numExtensions = 0;
+    vector<VkExtensionProperties> extensions;
+
+    result = vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &numExtensions, NULL);
+    CHECK_RESULT(result);
+
+    extensions.resize(numExtensions);
+    result = vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &numExtensions, extensions.data());
+    CHECK_RESULT(result);
+
+    for (uint32_t j = 0; j < numExtensions; ++j) {
+        if (strcmp(extensions[j].extensionName, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME) == 0) {
+            support.cooperativeMatrix = true;
+        }
+        if (strcmp(extensions[j].extensionName, VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME) == 0) {
+            support.cooperativeMatrix2 = true;
+        }
+        if (strcmp(extensions[j].extensionName, VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME) == 0) {
+            support.bfloat16 = true;
+        }
+        if (strcmp(extensions[j].extensionName, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME) == 0) {
+            support.float8 = true;
+        }
+    }
+
+    return support;
+}
 
 // pasted from Vulkan spec
 int32_t findProperties(const VkPhysicalDeviceMemoryProperties* pMemoryProperties,
@@ -129,6 +224,66 @@ static std::map<VkComponentTypeKHR, ComponentTypeInfo> componentTypeInfo
     {VK_COMPONENT_TYPE_FLOAT_E5M2_NV,{ "floate5m2_t", 8 }},
     {VK_COMPONENT_TYPE_FLOAT_E4M3_NV,{ "floate4m3_t", 8 }},
 };
+
+static const char *componentTypeName(VkComponentTypeKHR type)
+{
+    std::map<VkComponentTypeKHR, ComponentTypeInfo>::const_iterator it = componentTypeInfo.find(type);
+    return it != componentTypeInfo.end() ? it->second.typeName : "unknown";
+}
+
+static const char *scopeName(VkScopeKHR scope)
+{
+    switch (scope) {
+    default:
+        return "unknown";
+    case VK_SCOPE_DEVICE_KHR:
+        return "device";
+    case VK_SCOPE_WORKGROUP_KHR:
+        return "workgroup";
+    case VK_SCOPE_SUBGROUP_KHR:
+        return "subgroup";
+    case VK_SCOPE_QUEUE_FAMILY_KHR:
+        return "queuefamily";
+    }
+}
+
+static void dumpCooperativeMatrixProperties(
+    const vector<VkCooperativeMatrixPropertiesKHR> &properties,
+    const vector<VkCooperativeMatrixFlexibleDimensionsPropertiesNV> &flexibleProperties)
+{
+    printf("\n%s properties: %zu\n", VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, properties.size());
+    for (size_t i = 0; i < properties.size(); ++i) {
+        const VkCooperativeMatrixPropertiesKHR &p = properties[i];
+        printf("  [%zu] M=%u N=%u K=%u A=%s(%d) B=%s(%d) C=%s(%d) Result=%s(%d) saturating=%u scope=%s(%d)\n",
+               i,
+               p.MSize,
+               p.NSize,
+               p.KSize,
+               componentTypeName(p.AType), p.AType,
+               componentTypeName(p.BType), p.BType,
+               componentTypeName(p.CType), p.CType,
+               componentTypeName(p.ResultType), p.ResultType,
+               p.saturatingAccumulation,
+               scopeName(p.scope), p.scope);
+    }
+
+    printf("\n%s flexible dimension properties: %zu\n", VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME, flexibleProperties.size());
+    for (size_t i = 0; i < flexibleProperties.size(); ++i) {
+        const VkCooperativeMatrixFlexibleDimensionsPropertiesNV &p = flexibleProperties[i];
+        printf("  [%zu] MGranularity=%u NGranularity=%u KGranularity=%u A=%s(%d) B=%s(%d) C=%s(%d) Result=%s(%d) saturating=%u scope=%s(%d) workgroupInvocations=%u\n",
+               i,
+               p.MGranularity,
+               p.NGranularity,
+               p.KGranularity,
+               componentTypeName(p.AType), p.AType,
+               componentTypeName(p.BType), p.BType,
+               componentTypeName(p.CType), p.CType,
+               componentTypeName(p.ResultType), p.ResultType,
+               p.saturatingAccumulation,
+               scopeName(p.scope), p.scope,
+               p.workgroupInvocations);
+    }
+}
 
 struct TestCase
 {
@@ -504,12 +659,36 @@ void destroyMatrixDesc(VkDevice device, MatrixDesc &m)
 int main(int argc, char *argv[])
 {
     bool correctness = false;
+    bool listDevices = false;
+    bool dumpProperties = false;
+    bool hasRequestedPhysicalDevice = false;
+    uint32_t requestedPhysicalDeviceIndex = 0;
 
-    printf("usage: vk_cooperative_matrix_perf.exe [--correctness]\n\n");
+    printUsage(argc > 0 ? argv[0] : "vk_cooperative_matrix_perf");
 
     for (int arg = 1; arg < argc; ++arg) {
         if (strcmp(argv[arg], "--correctness") == 0) {
             correctness = true;
+        } else if (strcmp(argv[arg], "--list-devices") == 0) {
+            listDevices = true;
+        } else if (strcmp(argv[arg], "--dump-properties") == 0 ||
+                   strcmp(argv[arg], "--dump-coopmat-properties") == 0) {
+            dumpProperties = true;
+        } else if (strcmp(argv[arg], "--device") == 0) {
+            if (++arg >= argc) {
+                fprintf(stderr, "error: --device requires an index\n");
+                return 1;
+            }
+            requestedPhysicalDeviceIndex = (uint32_t)strtoul(argv[arg], NULL, 10);
+            hasRequestedPhysicalDevice = true;
+        } else if (strncmp(argv[arg], "--device=", 9) == 0) {
+            requestedPhysicalDeviceIndex = (uint32_t)strtoul(argv[arg] + 9, NULL, 10);
+            hasRequestedPhysicalDevice = true;
+        } else if (strcmp(argv[arg], "--help") == 0 || strcmp(argv[arg], "-h") == 0) {
+            return 0;
+        } else {
+            fprintf(stderr, "error: unknown argument '%s'\n", argv[arg]);
+            return 1;
         }
     }
 
@@ -547,6 +726,11 @@ int main(int argc, char *argv[])
     result = vkEnumeratePhysicalDevices(instance, &numPhysicalDevices, NULL);
     CHECK_RESULT(result);
 
+    if (numPhysicalDevices == 0) {
+        printf("couldn't find any Vulkan physical devices\n");
+        return 0;
+    }
+
     physicalDevices.resize(numPhysicalDevices);
     result = vkEnumeratePhysicalDevices(instance, &numPhysicalDevices, &physicalDevices[0]);
     CHECK_RESULT(result);
@@ -557,44 +741,66 @@ int main(int argc, char *argv[])
     bool bfloat16Supported = false;
     bool float8Supported = false;
 
+    vector<DeviceExtensionSupport> deviceExtensionSupport(numPhysicalDevices);
     for (uint32_t i = 0; i < numPhysicalDevices; ++i) {
+        deviceExtensionSupport[i] = getDeviceExtensionSupport(physicalDevices[i]);
 
-        uint32_t numExtensions = 0;
-        vector<VkExtensionProperties> extensions;
-
-        result = vkEnumerateDeviceExtensionProperties(physicalDevices[i], NULL, &numExtensions, NULL);
-        CHECK_RESULT(result);
-
-        extensions.resize(numExtensions);
-        result = vkEnumerateDeviceExtensionProperties(physicalDevices[i], NULL, &numExtensions, &extensions[0]);
-        CHECK_RESULT(result);
-
-        for (uint32_t j = 0; j < numExtensions; ++j) {
-            if (strcmp(extensions[j].extensionName, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME) == 0) {
-                printf("%s supported\n", extensions[j].extensionName);
-                physicalDeviceIndex = i;
-            }
-            if (strcmp(extensions[j].extensionName, VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME) == 0) {
-                printf("%s supported\n", extensions[j].extensionName);
-                coopmat2Supported = true;
-            }
-            if (strcmp(extensions[j].extensionName, VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME) == 0) {
-                printf("%s supported\n", extensions[j].extensionName);
-                bfloat16Supported = true;
-            }
-            if (strcmp(extensions[j].extensionName, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME) == 0) {
-                printf("%s supported\n", extensions[j].extensionName);
-                float8Supported = true;
-            }
+        if (listDevices) {
+            VkPhysicalDeviceProperties properties;
+            vkGetPhysicalDeviceProperties(physicalDevices[i], &properties);
+            printf("device %u: %s\n", i, properties.deviceName);
+            printf("  %s: %s\n", VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, deviceExtensionSupport[i].cooperativeMatrix ? "yes" : "no");
+            printf("  %s: %s\n", VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME, deviceExtensionSupport[i].cooperativeMatrix2 ? "yes" : "no");
+            printf("  %s: %s\n", VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME, deviceExtensionSupport[i].bfloat16 ? "yes" : "no");
+            printf("  %s: %s\n", VK_EXT_SHADER_FLOAT8_EXTENSION_NAME, deviceExtensionSupport[i].float8 ? "yes" : "no");
         }
-        if (physicalDeviceIndex != -1) {
-            break;
+
+        if (!hasRequestedPhysicalDevice && physicalDeviceIndex == -1 && deviceExtensionSupport[i].cooperativeMatrix) {
+            physicalDeviceIndex = i;
         }
+    }
+
+    if (listDevices) {
+        return 0;
+    }
+
+    if (hasRequestedPhysicalDevice) {
+        if (requestedPhysicalDeviceIndex >= numPhysicalDevices) {
+            fprintf(stderr, "error: --device %u is out of range; found %u physical device(s)\n",
+                    requestedPhysicalDeviceIndex, numPhysicalDevices);
+            return 1;
+        }
+        physicalDeviceIndex = (int)requestedPhysicalDeviceIndex;
     }
 
     if (physicalDeviceIndex == -1) {
         printf("couldn't find physical device that supports VK_KHR_cooperative_matrix\n");
         return 0;
+    }
+
+    if (!deviceExtensionSupport[physicalDeviceIndex].cooperativeMatrix) {
+        printf("selected physical device %d does not support %s\n",
+               physicalDeviceIndex, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+        return 0;
+    }
+
+    VkPhysicalDeviceProperties selectedDeviceProperties;
+    vkGetPhysicalDeviceProperties(physicalDevices[physicalDeviceIndex], &selectedDeviceProperties);
+    printf("using physical device %d: %s\n", physicalDeviceIndex, selectedDeviceProperties.deviceName);
+    printf("%s supported\n", VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+
+    coopmat2Supported = deviceExtensionSupport[physicalDeviceIndex].cooperativeMatrix2;
+    bfloat16Supported = deviceExtensionSupport[physicalDeviceIndex].bfloat16;
+    float8Supported = deviceExtensionSupport[physicalDeviceIndex].float8;
+
+    if (coopmat2Supported) {
+        printf("%s supported\n", VK_NV_COOPERATIVE_MATRIX_2_EXTENSION_NAME);
+    }
+    if (bfloat16Supported) {
+        printf("%s supported\n", VK_KHR_SHADER_BFLOAT16_EXTENSION_NAME);
+    }
+    if (float8Supported) {
+        printf("%s supported\n", VK_EXT_SHADER_FLOAT8_EXTENSION_NAME);
     }
     VkPhysicalDevice physicalDevice = physicalDevices[physicalDeviceIndex];
 
@@ -612,7 +818,7 @@ int main(int argc, char *argv[])
 
     int queueFamilyIndex = -1;
 
-    for (uint32_t i = 0; i < numPhysicalDevices; ++i) {
+    for (uint32_t i = 0; i < numQueueFamilies; ++i) {
         if (queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
             queueFamilyIndex = i;
             break;
@@ -649,7 +855,7 @@ int main(int argc, char *argv[])
         cooperativeMatrixProperties[i].pNext = NULL;
     }
 
-    result = pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(physicalDevice, &numCooperativeMatrixProperties, &cooperativeMatrixProperties[0]);
+    result = pfn_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(physicalDevice, &numCooperativeMatrixProperties, cooperativeMatrixProperties.data());
     CHECK_RESULT(result);
 
     uint32_t numCooperativeMatrixFlexibleDimensionsProperties = 0;
@@ -668,8 +874,13 @@ int main(int argc, char *argv[])
             cooperativeMatrixFlexibleDimensionsProperties[i].pNext = NULL;
         }
 
-        result = pfn_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV(physicalDevice, &numCooperativeMatrixFlexibleDimensionsProperties, &cooperativeMatrixFlexibleDimensionsProperties[0]);
+        result = pfn_vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV(physicalDevice, &numCooperativeMatrixFlexibleDimensionsProperties, cooperativeMatrixFlexibleDimensionsProperties.data());
         CHECK_RESULT(result);
+    }
+
+    if (dumpProperties) {
+        dumpCooperativeMatrixProperties(cooperativeMatrixProperties, cooperativeMatrixFlexibleDimensionsProperties);
+        return 0;
     }
 
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coopMatFeatures = {
@@ -849,15 +1060,6 @@ int main(int argc, char *argv[])
     result = vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, commandBuffers);
     CHECK_RESULT(result);
 
-    static const char *scopeString[] = {
-        "invalid",
-        "device",
-        "workgroup",
-        "subgroup",
-        "invalid",
-        "queuefamily",
-    };
-
     // Loop over all shader types and all cooperative matrix properties.
     for (uint32_t tt = 0; tt < TT_COUNT; ++tt) {
     for (uint32_t i = 0; i < numCooperativeMatrixProperties + numCooperativeMatrixFlexibleDimensionsProperties; ++i) {
@@ -1021,7 +1223,7 @@ int main(int argc, char *argv[])
                 componentTypeInfo[BType].typeName,
                 componentTypeInfo[CType].typeName,
                 componentTypeInfo[ResultType].typeName,
-                scopeString[scope]);
+                scopeName(scope));
 
         // For performance, test a 4096x4096x4096 multiply. For correctness,
         // test 256x256x256 (because the CPU reference computation is so slow).
