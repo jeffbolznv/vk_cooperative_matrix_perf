@@ -129,7 +129,7 @@ using std::vector;
 
 static void printUsage(const char *programName)
 {
-    printf("usage: %s [--correctness] [--device N] [--list-devices] [--dump-properties]\n\n", programName);
+    printf("usage: %s [--correctness] [--device N] [--list-devices] [--dump-properties] [--dim=N] [--barrier=on|off]\n\n", programName);
 }
 
 struct DeviceExtensionSupport
@@ -661,6 +661,9 @@ int main(int argc, char *argv[])
     bool listDevices = false;
     bool dumpProperties = false;
     bool hasRequestedPhysicalDevice = false;
+    bool hasRequestedDim = false;
+    uint32_t requestedDim = 0;
+    bool barrierEnabled = true;
     uint32_t requestedPhysicalDeviceIndex = 0;
 
     printUsage(argc > 0 ? argv[0] : "vk_cooperative_matrix_perf");
@@ -673,6 +676,23 @@ int main(int argc, char *argv[])
         } else if (strcmp(argv[arg], "--dump-properties") == 0 ||
                    strcmp(argv[arg], "--dump-coopmat-properties") == 0) {
             dumpProperties = true;
+        } else if (strncmp(argv[arg], "--dim=", 6) == 0) {
+            requestedDim = (uint32_t)strtoul(argv[arg] + 6, NULL, 10);
+            if (requestedDim == 0) {
+                fprintf(stderr, "error: --dim must be non-zero\n");
+                return 1;
+            }
+            hasRequestedDim = true;
+        } else if (strncmp(argv[arg], "--barrier=", 10) == 0) {
+            const char *barrierArg = argv[arg] + 10;
+            if (strcmp(barrierArg, "on") == 0) {
+                barrierEnabled = true;
+            } else if (strcmp(barrierArg, "off") == 0) {
+                barrierEnabled = false;
+            } else {
+                fprintf(stderr, "error: --barrier requires on or off\n");
+                return 1;
+            }
         } else if (strcmp(argv[arg], "--device") == 0) {
             if (++arg >= argc) {
                 fprintf(stderr, "error: --device requires an index\n");
@@ -689,6 +709,14 @@ int main(int argc, char *argv[])
             fprintf(stderr, "error: unknown argument '%s'\n", argv[arg]);
             return 1;
         }
+    }
+
+    uint32_t defaultDim = hasRequestedDim ? requestedDim : (correctness ? 256 : 4096);
+    const uint32_t dimAlignment = 256;
+    if ((defaultDim % dimAlignment) != 0) {
+        uint32_t roundedDim = (defaultDim + dimAlignment - 1) / dimAlignment * dimAlignment;
+        printf("rounding matrix dimension from %u to %u\n", defaultDim, roundedDim);
+        defaultDim = roundedDim;
     }
 
     // Initialize Vulkan
@@ -1246,7 +1274,6 @@ int main(int argc, char *argv[])
 
         // For performance, test a 4096x4096x4096 multiply. For correctness,
         // test 256x256x256 (because the CPU reference computation is so slow).
-        uint32_t defaultDim = correctness ? 256 : 4096;
         uint32_t defaultM = defaultDim;
         uint32_t defaultN = defaultDim;
         uint32_t defaultK = defaultDim;
@@ -1642,7 +1669,7 @@ int main(int argc, char *argv[])
                 vkCmdDispatch(commandBuffers[1], testCase.N / testCase.TILE_N, testCase.M / testCase.TILE_M, 1);
                 // pipeline barrier. vulkan queue will overlap dispatches otherwise and skew 
                 // single gemm perf data
-                if (i + 1 < repeatCount) {
+                if (barrierEnabled && i + 1 < repeatCount) {
                     VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
                     mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
                     mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
