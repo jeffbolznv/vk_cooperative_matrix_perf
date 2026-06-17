@@ -27,6 +27,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <map>
+#include <set>
 #include <vector>
 #include <chrono>
 #include <string.h>
@@ -115,6 +116,7 @@ typedef VkResult (VKAPI_PTR *PFN_vkGetPhysicalDeviceCooperativeMatrixFlexibleDim
 #endif
 
 using std::vector;
+using std::set;
 
 #define ARRAY_LENGTH(x) (sizeof(x) / sizeof(x[0]))
 
@@ -129,7 +131,7 @@ using std::vector;
 
 static void printUsage(const char *programName)
 {
-    printf("usage: %s [--correctness] [--device N] [--list-devices] [--dump-properties] [--dim=N] [--barrier=on|off]\n\n", programName);
+    printf("usage: %s [--correctness] [--device N] [--list-devices] [--dump-properties] [--dim=N] [--barrier=on|off] [--shmem]\n\n", programName);
 }
 
 struct DeviceExtensionSupport
@@ -243,6 +245,257 @@ static const char *scopeName(VkScopeKHR scope)
         return "subgroup";
     case VK_SCOPE_QUEUE_FAMILY_KHR:
         return "queuefamily";
+    }
+}
+
+struct SupportedTypeCombination
+{
+    VkComponentTypeKHR inputType;
+    VkComponentTypeKHR outputType;
+    const char *inputTypeToken;
+    const char *outputTypeToken;
+};
+
+static const SupportedTypeCombination supportedTypeCombinations[] =
+{
+    { VK_COMPONENT_TYPE_BFLOAT16_KHR,    VK_COMPONENT_TYPE_FLOAT32_KHR, "bf16", "fp32" },
+    { VK_COMPONENT_TYPE_FLOAT16_KHR,     VK_COMPONENT_TYPE_FLOAT16_KHR, "fp16", "fp16" },
+    { VK_COMPONENT_TYPE_FLOAT16_KHR,     VK_COMPONENT_TYPE_FLOAT32_KHR, "fp16", "fp32" },
+    { VK_COMPONENT_TYPE_UINT8_KHR,       VK_COMPONENT_TYPE_UINT32_KHR,  "u8",   "u32" },
+    { VK_COMPONENT_TYPE_SINT8_KHR,       VK_COMPONENT_TYPE_SINT32_KHR,  "s8",   "s32" },
+    { VK_COMPONENT_TYPE_FLOAT_E5M2_NV,   VK_COMPONENT_TYPE_FLOAT16_KHR, "e5m2", "fp16" },
+    { VK_COMPONENT_TYPE_FLOAT_E4M3_NV,   VK_COMPONENT_TYPE_FLOAT16_KHR, "e4m3", "fp16" },
+    { VK_COMPONENT_TYPE_FLOAT_E5M2_NV,   VK_COMPONENT_TYPE_FLOAT32_KHR, "e5m2", "fp32" },
+    { VK_COMPONENT_TYPE_FLOAT_E4M3_NV,   VK_COMPONENT_TYPE_FLOAT32_KHR, "e4m3", "fp32" },
+};
+
+static const SupportedTypeCombination *findSupportedTypeCombination(
+    VkComponentTypeKHR AType,
+    VkComponentTypeKHR BType,
+    VkComponentTypeKHR CType,
+    VkComponentTypeKHR ResultType)
+{
+    if (AType != BType || CType != ResultType) {
+        return NULL;
+    }
+
+    for (uint32_t i = 0; i < ARRAY_LENGTH(supportedTypeCombinations); ++i) {
+        if (supportedTypeCombinations[i].inputType == AType &&
+            supportedTypeCombinations[i].outputType == ResultType) {
+            return &supportedTypeCombinations[i];
+        }
+    }
+
+    return NULL;
+}
+
+static const char *shaderPrefix(TestType testType)
+{
+    switch (testType) {
+    default:
+        assert(0);
+        return "";
+    case TT_WORKGROUP:
+        return "workgroup";
+    case TT_SHARED:
+        return "shmem";
+    }
+}
+
+static std::string shaderFileName(TestType testType, const SupportedTypeCombination &types)
+{
+    return std::string("shaders/") + shaderPrefix(testType) + types.inputTypeToken + "_" + types.outputTypeToken + ".spv";
+}
+
+struct CooperativeMatrixTestTarget
+{
+    TestType testType;
+    uint32_t MSize;
+    uint32_t NSize;
+    uint32_t KSize;
+    VkComponentTypeKHR AType;
+    VkComponentTypeKHR BType;
+    VkComponentTypeKHR CType;
+    VkComponentTypeKHR ResultType;
+    VkScopeKHR scope;
+    uint32_t workgroupInvocations;
+    const SupportedTypeCombination *typeCombination;
+};
+
+static const uint32_t workgroupSizesToTest[] = { 256, 128 };
+
+// Gather advertised cooperative matrix shapes into an ordered set before
+// running tests. The set removes duplicate properties while keeping the final
+// iteration order explicit: workgroup before shmem, then input type, accumulator
+// type, descending workgroup size, and finally shape/tie-breaker fields.
+static bool isWorkgroupSizeToTest(uint32_t workgroupInvocations)
+{
+    for (uint32_t i = 0; i < ARRAY_LENGTH(workgroupSizesToTest); ++i) {
+        if (workgroupSizesToTest[i] == workgroupInvocations) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint32_t supportedTypeCombinationIndex(const SupportedTypeCombination *typeCombination)
+{
+    for (uint32_t i = 0; i < ARRAY_LENGTH(supportedTypeCombinations); ++i) {
+        if (&supportedTypeCombinations[i] == typeCombination) {
+            return i;
+        }
+    }
+    return ARRAY_LENGTH(supportedTypeCombinations);
+}
+
+static uint32_t inputTypeSortIndex(VkComponentTypeKHR type)
+{
+    switch (type) {
+    case VK_COMPONENT_TYPE_FLOAT16_KHR:   return 0;
+    case VK_COMPONENT_TYPE_UINT8_KHR:     return 1;
+    case VK_COMPONENT_TYPE_SINT8_KHR:     return 2;
+    case VK_COMPONENT_TYPE_BFLOAT16_KHR:  return 3;
+    case VK_COMPONENT_TYPE_FLOAT_E5M2_NV: return 4;
+    case VK_COMPONENT_TYPE_FLOAT_E4M3_NV: return 5;
+    default:                              return 6;
+    }
+}
+
+static uint32_t accumulatorTypeSortIndex(VkComponentTypeKHR type)
+{
+    switch (type) {
+    case VK_COMPONENT_TYPE_FLOAT16_KHR: return 0;
+    case VK_COMPONENT_TYPE_FLOAT32_KHR: return 1;
+    case VK_COMPONENT_TYPE_UINT32_KHR:  return 2;
+    case VK_COMPONENT_TYPE_SINT32_KHR:  return 3;
+    default:                            return 4;
+    }
+}
+
+static uint64_t cooperativeMatrixTileVolume(const CooperativeMatrixTestTarget &target)
+{
+    return (uint64_t)target.MSize * (uint64_t)target.NSize * (uint64_t)target.KSize;
+}
+
+struct CooperativeMatrixTestTargetLess
+{
+    bool operator()(const CooperativeMatrixTestTarget &a, const CooperativeMatrixTestTarget &b) const
+    {
+        uint32_t aInputIndex = inputTypeSortIndex(a.AType);
+        uint32_t bInputIndex = inputTypeSortIndex(b.AType);
+        uint32_t aAccumulatorIndex = accumulatorTypeSortIndex(a.ResultType);
+        uint32_t bAccumulatorIndex = accumulatorTypeSortIndex(b.ResultType);
+        uint32_t aTypeIndex = supportedTypeCombinationIndex(a.typeCombination);
+        uint32_t bTypeIndex = supportedTypeCombinationIndex(b.typeCombination);
+
+        if (a.testType != b.testType) return a.testType < b.testType;
+        if (aInputIndex != bInputIndex) return aInputIndex < bInputIndex;
+        if (a.AType != b.AType) return a.AType < b.AType;
+        if (aAccumulatorIndex != bAccumulatorIndex) return aAccumulatorIndex < bAccumulatorIndex;
+        if (a.workgroupInvocations != b.workgroupInvocations) return a.workgroupInvocations > b.workgroupInvocations;
+        if (aTypeIndex != bTypeIndex) return aTypeIndex < bTypeIndex;
+        if (a.testType == TT_SHARED && b.testType == TT_SHARED) {
+            uint64_t aTileVolume = cooperativeMatrixTileVolume(a);
+            uint64_t bTileVolume = cooperativeMatrixTileVolume(b);
+            if (aTileVolume != bTileVolume) return aTileVolume > bTileVolume;
+            if (a.MSize != b.MSize) return a.MSize > b.MSize;
+            if (a.NSize != b.NSize) return a.NSize > b.NSize;
+            if (a.KSize != b.KSize) return a.KSize > b.KSize;
+        }
+        if (a.MSize != b.MSize) return a.MSize < b.MSize;
+        if (a.NSize != b.NSize) return a.NSize < b.NSize;
+        if (a.KSize != b.KSize) return a.KSize < b.KSize;
+        if (a.BType != b.BType) return a.BType < b.BType;
+        if (a.CType != b.CType) return a.CType < b.CType;
+        if (a.ResultType != b.ResultType) return a.ResultType < b.ResultType;
+        if (a.scope != b.scope) return a.scope < b.scope;
+        return false;
+    }
+};
+
+typedef set<CooperativeMatrixTestTarget, CooperativeMatrixTestTargetLess> CooperativeMatrixTestTargetSet;
+
+static void addCooperativeMatrixTestTarget(
+    CooperativeMatrixTestTargetSet &targets,
+    TestType testType,
+    uint32_t MSize,
+    uint32_t NSize,
+    uint32_t KSize,
+    VkComponentTypeKHR AType,
+    VkComponentTypeKHR BType,
+    VkComponentTypeKHR CType,
+    VkComponentTypeKHR ResultType,
+    VkScopeKHR scope,
+    uint32_t workgroupInvocations)
+{
+    const SupportedTypeCombination *typeCombination =
+        findSupportedTypeCombination(AType, BType, CType, ResultType);
+    if (!typeCombination) {
+        return;
+    }
+
+    CooperativeMatrixTestTarget target = {
+        testType,
+        MSize,
+        NSize,
+        KSize,
+        AType,
+        BType,
+        CType,
+        ResultType,
+        scope,
+        workgroupInvocations,
+        typeCombination,
+    };
+    targets.insert(target);
+}
+
+static void addWorkgroupCooperativeMatrixTestTargets(
+    CooperativeMatrixTestTargetSet &targets,
+    const vector<VkCooperativeMatrixFlexibleDimensionsPropertiesNV> &properties)
+{
+    for (size_t i = 0; i < properties.size(); ++i) {
+        const VkCooperativeMatrixFlexibleDimensionsPropertiesNV *p = &properties[i];
+        if (p->scope != VK_SCOPE_WORKGROUP_KHR ||
+            !isWorkgroupSizeToTest(p->workgroupInvocations)) {
+            continue;
+        }
+
+        addCooperativeMatrixTestTarget(targets,
+                                       TT_WORKGROUP,
+                                       p->MGranularity,
+                                       p->NGranularity,
+                                       p->KGranularity,
+                                       p->AType,
+                                       p->BType,
+                                       p->CType,
+                                       p->ResultType,
+                                       p->scope,
+                                       p->workgroupInvocations);
+    }
+}
+
+static void addSubgroupCooperativeMatrixTestTargets(
+    CooperativeMatrixTestTargetSet &targets,
+    const vector<VkCooperativeMatrixPropertiesKHR> &properties)
+{
+    for (size_t i = 0; i < properties.size(); ++i) {
+        const VkCooperativeMatrixPropertiesKHR *p = &properties[i];
+        if (p->scope != VK_SCOPE_SUBGROUP_KHR) {
+            continue;
+        }
+
+        addCooperativeMatrixTestTarget(targets,
+                                       TT_SHARED,
+                                       p->MSize,
+                                       p->NSize,
+                                       p->KSize,
+                                       p->AType,
+                                       p->BType,
+                                       p->CType,
+                                       p->ResultType,
+                                       p->scope,
+                                       0);
     }
 }
 
@@ -664,6 +917,7 @@ int main(int argc, char *argv[])
     bool hasRequestedDim = false;
     uint32_t requestedDim = 0;
     bool barrierEnabled = true;
+    bool shmemOnly = false;
     uint32_t requestedPhysicalDeviceIndex = 0;
 
     printUsage(argc > 0 ? argv[0] : "vk_cooperative_matrix_perf");
@@ -673,6 +927,8 @@ int main(int argc, char *argv[])
             correctness = true;
         } else if (strcmp(argv[arg], "--list-devices") == 0) {
             listDevices = true;
+        } else if (strcmp(argv[arg], "--shmem") == 0) {
+            shmemOnly = true;
         } else if (strcmp(argv[arg], "--dump-properties") == 0 ||
                    strcmp(argv[arg], "--dump-coopmat-properties") == 0) {
             dumpProperties = true;
@@ -1110,131 +1366,31 @@ int main(int argc, char *argv[])
     result = vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, commandBuffers);
     CHECK_RESULT(result);
 
-    // Loop over all shader types and all cooperative matrix properties.
-    for (uint32_t tt = 0; tt < TT_COUNT; ++tt) {
-    for (uint32_t i = 0; i < numCooperativeMatrixProperties + numCooperativeMatrixFlexibleDimensionsProperties; ++i) {
+    CooperativeMatrixTestTargetSet testTargetSet;
+    if (!shmemOnly) {
+        addWorkgroupCooperativeMatrixTestTargets(testTargetSet, cooperativeMatrixFlexibleDimensionsProperties);
+    }
+    addSubgroupCooperativeMatrixTestTargets(testTargetSet, cooperativeMatrixProperties);
 
-        uint32_t              MSize;
-        uint32_t              NSize;
-        uint32_t              KSize;
-        VkComponentTypeKHR    AType;
-        VkComponentTypeKHR    BType;
-        VkComponentTypeKHR    CType;
-        VkComponentTypeKHR    ResultType;
-        VkScopeKHR            scope;
+    // Loop over the testable cooperative matrix properties.
+    for (CooperativeMatrixTestTargetSet::const_iterator targetIt = testTargetSet.begin(); targetIt != testTargetSet.end(); ++targetIt) {
+        const CooperativeMatrixTestTarget &target = *targetIt;
+        TestType tt = target.testType;
+        uint32_t MSize = target.MSize;
+        uint32_t NSize = target.NSize;
+        uint32_t KSize = target.KSize;
+        VkComponentTypeKHR AType = target.AType;
+        VkComponentTypeKHR BType = target.BType;
+        VkComponentTypeKHR CType = target.CType;
+        VkComponentTypeKHR ResultType = target.ResultType;
+        VkScopeKHR scope = target.scope;
+        uint32_t workgroupSize = tt == TT_WORKGROUP ? target.workgroupInvocations : requiredSubgroupSize * 8;
 
-        if (i < numCooperativeMatrixFlexibleDimensionsProperties) {
-            VkCooperativeMatrixFlexibleDimensionsPropertiesNV *cooperativeMatrixProps = &cooperativeMatrixFlexibleDimensionsProperties[i];
-            MSize = cooperativeMatrixProps->MGranularity;
-            NSize = cooperativeMatrixProps->NGranularity;
-            KSize = cooperativeMatrixProps->KGranularity;
-            AType = cooperativeMatrixProps->AType;
-            BType = cooperativeMatrixProps->BType;
-            CType = cooperativeMatrixProps->CType;
-            ResultType = cooperativeMatrixProps->ResultType;
-            scope = cooperativeMatrixProps->scope;
-
-            bool skip = false;
-            for (uint32_t j = 0; j < i; ++j) {
-                VkCooperativeMatrixFlexibleDimensionsPropertiesNV *other = &cooperativeMatrixFlexibleDimensionsProperties[j];
-                if (AType == other->AType &&
-                    BType == other->BType &&
-                    CType == other->CType &&
-                    ResultType == other->ResultType &&
-                    scope == other->scope) {
-                    // We don't currently look at the granularity and workgroupInvocations, so skip "duplicates"
-                    skip = true;
-                }
-            }
-            if (skip) {
-                continue;
-            }
-        } else {
-            VkCooperativeMatrixPropertiesKHR *cooperativeMatrixProps = &cooperativeMatrixProperties[i - numCooperativeMatrixFlexibleDimensionsProperties];
-            MSize = cooperativeMatrixProps->MSize;
-            NSize = cooperativeMatrixProps->NSize;
-            KSize = cooperativeMatrixProps->KSize;
-            AType = cooperativeMatrixProps->AType;
-            BType = cooperativeMatrixProps->BType;
-            CType = cooperativeMatrixProps->CType;
-            ResultType = cooperativeMatrixProps->ResultType;
-            scope = cooperativeMatrixProps->scope;
-        }
-
-        if ((tt == TT_WORKGROUP && scope != VK_SCOPE_WORKGROUP_KHR) ||
-            (tt != TT_WORKGROUP && scope != VK_SCOPE_SUBGROUP_KHR)) {
+        if (tt == TT_SHARED && (workgroupSize < 32 || workgroupSize > 256)) {
             continue;
         }
 
-        if (ResultType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
-            ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR &&
-            AType != VK_COMPONENT_TYPE_UINT8_KHR &&
-            AType != VK_COMPONENT_TYPE_SINT8_KHR) {
-            continue;
-        }
-
-        if (AType != VK_COMPONENT_TYPE_UINT8_KHR &&
-            AType != VK_COMPONENT_TYPE_SINT8_KHR &&
-            AType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
-            AType != VK_COMPONENT_TYPE_BFLOAT16_KHR &&
-            AType != VK_COMPONENT_TYPE_FLOAT_E5M2_NV &&
-            AType != VK_COMPONENT_TYPE_FLOAT_E4M3_NV) {
-            printf("\nunsupported AType %d\n", AType);
-            continue;
-        }
-
-        if (BType != VK_COMPONENT_TYPE_UINT8_KHR &&
-            BType != VK_COMPONENT_TYPE_SINT8_KHR &&
-            BType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
-            BType != VK_COMPONENT_TYPE_BFLOAT16_KHR &&
-            BType != VK_COMPONENT_TYPE_FLOAT_E5M2_NV &&
-            BType != VK_COMPONENT_TYPE_FLOAT_E4M3_NV) {
-            printf("\nunsupported BType %d\n", BType);
-            continue;
-        }
-
-        if (CType != VK_COMPONENT_TYPE_UINT32_KHR &&
-            CType != VK_COMPONENT_TYPE_SINT32_KHR &&
-            CType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
-            CType != VK_COMPONENT_TYPE_FLOAT32_KHR) {
-            printf("\nunsupported CType %d\n", CType);
-            continue;
-        }
-
-        if (ResultType != VK_COMPONENT_TYPE_UINT32_KHR &&
-            ResultType != VK_COMPONENT_TYPE_SINT32_KHR &&
-            ResultType != VK_COMPONENT_TYPE_FLOAT16_KHR &&
-            ResultType != VK_COMPONENT_TYPE_FLOAT32_KHR) {
-            printf("\nunsupported ResultType %d\n", ResultType);
-            continue;
-        }
-
-        std::string typeStrA =
-            AType == VK_COMPONENT_TYPE_UINT8_KHR ? "u8" :
-            AType == VK_COMPONENT_TYPE_SINT8_KHR ? "s8" :
-            AType == VK_COMPONENT_TYPE_BFLOAT16_KHR ? "bf16" :
-            AType == VK_COMPONENT_TYPE_FLOAT_E5M2_NV ? "e5m2" :
-            AType == VK_COMPONENT_TYPE_FLOAT_E4M3_NV ? "e4m3" :
-                                                       "fp16";
-
-        std::string typeStrR =
-            ResultType == VK_COMPONENT_TYPE_UINT32_KHR ? "u32" :
-            ResultType == VK_COMPONENT_TYPE_SINT32_KHR ? "s32" :
-            ResultType == VK_COMPONENT_TYPE_FLOAT16_KHR ? "fp16" :
-                                                          "fp32";
-
-        std::string fileName;
-        switch (tt) {
-        default:
-            assert(0);
-        case TT_WORKGROUP:
-            fileName = std::string("shaders/workgroup");
-            break;
-        case TT_SHARED:
-            fileName = std::string("shaders/shmem");
-            break;
-        }
-        fileName = fileName + typeStrA + "_" + typeStrR + ".spv";
+        std::string fileName = shaderFileName(tt, *target.typeCombination);
 
         printf("\nshader: %s\n", fileName.c_str());
 
@@ -1298,7 +1454,6 @@ int main(int argc, char *argv[])
         for (unsigned int TILE_N_size = params->granularityTILE_N; TILE_N_size <= params->maxTILE_N; TILE_N_size += params->granularityTILE_N) {
         for (unsigned int bcolmajor = 0; bcolmajor <= 1; ++bcolmajor) {
         for (unsigned int TILE_K = 16; TILE_K <= 64; TILE_K *= 2) {
-        for (unsigned int workgroupSize = 32; workgroupSize <= 256; workgroupSize *= 2) {
 
             if (tt == TT_WORKGROUP && (TILE_N_size == 192 || TILE_M_size == 192)) {
                 continue;
@@ -1364,40 +1519,6 @@ int main(int argc, char *argv[])
                     continue;
                 }
             }
-            switch (tt) {
-            case TT_WORKGROUP:
-                if (workgroupSize != 128 && workgroupSize != 256) {
-                    continue;
-                }
-                // The same type may be advertised at several workgroup sizes as
-                // separate flexible properties; only run the advertised ones.
-                {
-                    bool supported = false;
-                    for (uint32_t j = 0; j < numCooperativeMatrixFlexibleDimensionsProperties; ++j) {
-                        const VkCooperativeMatrixFlexibleDimensionsPropertiesNV *other = &cooperativeMatrixFlexibleDimensionsProperties[j];
-                        if (other->scope == VK_SCOPE_WORKGROUP_KHR &&
-                            other->AType == AType && other->BType == BType &&
-                            other->CType == CType && other->ResultType == ResultType &&
-                            other->workgroupInvocations == workgroupSize) {
-                            supported = true;
-                            break;
-                        }
-                    }
-                    if (!supported) {
-                        continue;
-                    }
-                }
-                break;
-            case TT_SHARED:
-                if (workgroupSize != requiredSubgroupSize * 8) {
-                    continue;
-                }
-                break;
-            default:
-                assert(0);
-                break;
-            }
-
             // For non-power of two tile sizes, round up the matrix size to
             // be an even multiple of the tile size.
             testCase.M = (testCase.M + testCase.TILE_M - 1) / testCase.TILE_M * testCase.TILE_M;
@@ -1789,15 +1910,13 @@ int main(int argc, char *argv[])
             }
             vkDestroyPipeline(device, pipeline, NULL);
 
-        } // workgroupSize
         } // TILE_K
         } // bcolmajor
         } // TILE_N_size
         } // TILE_M_size
 
         vkDestroyShaderModule(device, shaderModule, NULL);
-    } // numCooperativeMatrixProperties
-    } // TT_COUNT
+    } // testTargets
 
     printf("\ndone\n");
 
