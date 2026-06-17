@@ -232,6 +232,11 @@ static const char *componentTypeName(VkComponentTypeKHR type)
     return it != componentTypeInfo.end() ? it->second.typeName : "unknown";
 }
 
+static bool isUvec4AlignedElementCount(VkComponentTypeKHR type, uint32_t elementCount)
+{
+    return (componentTypeInfo[type].bits * elementCount) % 128 == 0;
+}
+
 static const char *scopeName(VkScopeKHR scope)
 {
     switch (scope) {
@@ -1464,10 +1469,19 @@ int main(int argc, char *argv[])
 
             bool BColMajor = bcolmajor != 0;
 
-            // B matrix must be wide enough to load via uvec4 addressing from shared memory
-            if (!BColMajor && tt == TT_SHARED &&
-                componentTypeInfo[BType].bits / 8 * NSize < 16) {
-                continue;
+            if (tt == TT_SHARED) {
+                bool aLoadsAligned = isUvec4AlignedElementCount(AType, KSize);
+                bool bLoadsAligned = isUvec4AlignedElementCount(BType, BColMajor ? KSize : NSize);
+
+                // The shmem shader stores A and B through uvec4 shared arrays
+                // and passes uvec4 offsets to coopMatLoad. That only works when
+                // each cooperative-matrix load starts on a 16-byte boundary;
+                // otherwise the scalar element offset would be truncated when
+                // converted to a uvec4 offset. Skip unaligned shapes here rather
+                // than adding a separate scalar shared-memory path to the shader.
+                if (!aLoadsAligned || !bLoadsAligned) {
+                    continue;
+                }
             }
 
             TestCase testCase = {
