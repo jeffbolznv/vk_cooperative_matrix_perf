@@ -56,6 +56,7 @@ layout(constant_id = 16)const uint B_ROW_LEN = 1;
 layout(constant_id = 17)const uint B_NUM_ROWS = 1;
 layout(constant_id = 19) const uint M = 1;
 layout(constant_id = 20) const uint N = 1;
+layout(constant_id = 22) const bool LoadC = true;
 
 const int LayoutB = BColMajor ? gl_CooperativeMatrixLayoutColumnMajor : gl_CooperativeMatrixLayoutRowMajor;
 
@@ -116,11 +117,16 @@ void main()
         result = coopMatMulAdd(matA, matB, result);
     }
 
-    coopmat<C_TYPE, gl_ScopeWorkgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator> matC;
-
-    coopMatLoadTensorNV(matC, inputC.x, 0, sliceTensorLayoutNV(tensorLayoutC, TILE_M * tileID.y, TILE_M, TILE_N * tileID.x, TILE_N));
-
-    result = C_TYPE(alpha) * result + C_TYPE(beta) * matC;
+    if (LoadC) {
+        coopmat<C_TYPE, gl_ScopeWorkgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator> matC;
+        coopMatLoadTensorNV(matC, inputC.x, 0,
+                            sliceTensorLayoutNV(tensorLayoutC,
+                                                TILE_M * tileID.y, TILE_M,
+                                                TILE_N * tileID.x, TILE_N));
+        result = C_TYPE(alpha) * result + C_TYPE(beta) * matC;
+    } else {
+        result = C_TYPE(alpha) * result;
+    }
 
     coopMatStoreTensorNV(result, outputO.x, 0, sliceTensorLayoutNV(tensorLayoutC, TILE_M * tileID.y, TILE_M, TILE_N * tileID.x, TILE_N));
 }
