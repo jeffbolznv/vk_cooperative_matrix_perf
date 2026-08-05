@@ -79,6 +79,7 @@ const uint WORKGROUP_WIDTH_IN_SUBGROUPS = 4;
 const uint WORKGROUP_HEIGHT_IN_SUBGROUPS = 2;
 const uint NUM_SUBGROUPS = WORKGROUP_WIDTH_IN_SUBGROUPS * WORKGROUP_HEIGHT_IN_SUBGROUPS;
 layout(constant_id = 21) const uint SUBGROUP_SIZE = 32;
+layout(constant_id = 22) const bool LoadC = true;
 const uint INVOCATIONS_PER_WORKGROUP = SUBGROUP_SIZE * NUM_SUBGROUPS;
 layout(local_size_x_id = 18, local_size_y = 1, local_size_z = 1) in;
 const uint C_ROWS = TILE_M / WORKGROUP_HEIGHT_IN_SUBGROUPS / lM;
@@ -215,15 +216,20 @@ void main()
         uint gi = TILE_M * tileID.y + lM * (C_ROWS * warpInTile.y + i);
         coopmat<C_TYPE, gl_ScopeSubgroup, lM, lN, gl_MatrixUseAccumulator> matC[C_COLS];
 
-        [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
-            uint gj = TILE_N * tileID.x + lN * (C_COLS * warpInTile.x + j);
-            coopMatLoad(matC[j], inputC.x, coordToOffset(gi, gj, strideC, false), strideC, gl_CooperativeMatrixLayoutRowMajor);
+        if (LoadC) {
+            [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
+                uint gj = TILE_N * tileID.x + lN * (C_COLS * warpInTile.x + j);
+                coopMatLoad(matC[j], inputC.x, coordToOffset(gi, gj, strideC, false), strideC, gl_CooperativeMatrixLayoutRowMajor);
+            }
         }
 
         [[unroll]] for (uint j = 0; j < C_COLS; ++j) {
             uint gj = TILE_N * tileID.x + lN * (C_COLS * warpInTile.x + j);
 
-            result[i][j] = C_TYPE(alpha) * result[i][j] + C_TYPE(beta) * matC[j];
+            result[i][j] = C_TYPE(alpha) * result[i][j];
+            if (LoadC) {
+                result[i][j] += C_TYPE(beta) * matC[j];
+            }
             coopMatStore(result[i][j], outputO.x, coordToOffset(gi, gj, strideD, false), strideD, gl_CooperativeMatrixLayoutRowMajor);
         }
     }

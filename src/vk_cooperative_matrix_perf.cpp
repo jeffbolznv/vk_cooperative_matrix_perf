@@ -131,7 +131,7 @@ using std::set;
 
 static void printUsage(const char *programName)
 {
-    printf("usage: %s [--correctness] [--device N] [--list-devices] [--dump-properties] [--dim=N] [--barrier=on|off] [--shmem]\n\n", programName);
+    printf("usage: %s [--correctness] [--device N] [--list-devices] [--dump-properties] [--dim=N] [--barrier=on|off] [--load-c=on|off] [--shmem]\n\n", programName);
 }
 
 struct DeviceExtensionSupport
@@ -922,6 +922,7 @@ int main(int argc, char *argv[])
     bool hasRequestedDim = false;
     uint32_t requestedDim = 0;
     bool barrierEnabled = true;
+    bool loadC = true;
     bool shmemOnly = false;
     uint32_t requestedPhysicalDeviceIndex = 0;
 
@@ -952,6 +953,16 @@ int main(int argc, char *argv[])
                 barrierEnabled = false;
             } else {
                 fprintf(stderr, "error: --barrier requires on or off\n");
+                return 1;
+            }
+        } else if (strncmp(argv[arg], "--load-c=", 9) == 0) {
+            const char *loadCArg = argv[arg] + 9;
+            if (strcmp(loadCArg, "on") == 0) {
+                loadC = true;
+            } else if (strcmp(loadCArg, "off") == 0) {
+                loadC = false;
+            } else {
+                fprintf(stderr, "error: --load-c requires on or off\n");
                 return 1;
             }
         } else if (strcmp(argv[arg], "--device") == 0) {
@@ -1682,6 +1693,7 @@ int main(int argc, char *argv[])
                 testCase.M,
                 testCase.N,
                 requiredSubgroupSize,
+                uint32_t(loadC),
             };
 
 #if 0
@@ -1713,6 +1725,7 @@ int main(int argc, char *argv[])
                 {19, sizeof(uint32_t) * 19, sizeof(uint32_t)},
                 {20, sizeof(uint32_t) * 20, sizeof(uint32_t)},
                 {21, sizeof(uint32_t) * 21, sizeof(uint32_t)},
+                {22, sizeof(uint32_t) * 22, sizeof(uint32_t)},
             };
 
             VkSpecializationInfo specInfo =
@@ -1885,7 +1898,10 @@ int main(int argc, char *argv[])
                                 ref += mat_a.getDataFloat(i, k, false) * mat_b.getDataFloat(k, j, testCase.BColMajor);
                             }
 
-                            ref = alpha*ref + beta*mat_c.getDataFloat(i, j, false);
+                            ref = alpha * ref;
+                            if (loadC) {
+                                ref += beta * mat_c.getDataFloat(i, j, false);
+                            }
 
                             float Dij = mat_d.getDataFloat(i, j, false);
                             if (ref != Dij) {
@@ -1905,7 +1921,10 @@ int main(int argc, char *argv[])
                                 ref += mat_a.getDataInt(i, k, false) * mat_b.getDataInt(k, j, testCase.BColMajor);
                             }
 
-                            ref = ((int)alpha)*ref + ((int)beta)*mat_c.getDataInt(i, j, false);
+                            ref = ((int)alpha) * ref;
+                            if (loadC) {
+                                ref += ((int)beta) * mat_c.getDataInt(i, j, false);
+                            }
 
                             uint32_t Dij = mat_d.getDataInt(i, j, false);
                             if (ref != Dij) {
