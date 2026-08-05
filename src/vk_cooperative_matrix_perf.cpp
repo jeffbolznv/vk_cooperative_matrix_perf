@@ -1648,15 +1648,18 @@ int main(int argc, char *argv[])
 
             vkUpdateDescriptorSets(device, 1, &writeDescriptorset, 0, NULL);
 
-            // Initialize input buffers to random values. These are relatively
-            // small and have few mantissa bits set so we don't lose precision
-            // in fp16 mode when running the correctness test.
+            // Use low-entropy values for correctness to minimize floating-point
+            // precision differences. Performance tests use values uniformly
+            // distributed in [-1, 1].
             // Initialize the output buffer to an obvious value.
             for (uint32_t i = 0; i < NUM_MATS; ++i) {
                 MatrixDesc &m = matrices[i];
                 for (uint32_t j = 0; j < m.totalElements; ++j) {
                     if (m.isFloatType()) {
-                        m.setDataFloat(j, ((float)(rand() & 0x3) - 1.0f) / 2.0f);
+                        float value = correctness ?
+                            ((float)(rand() & 0x3) - 1.0f) / 2.0f :
+                            2.0f * (float)rand() / (float)RAND_MAX - 1.0f;
+                        m.setDataFloat(j, value);
                         if (i == 3) {
                             m.setDataFloat(j, 1234.0f);
                         }
@@ -1811,7 +1814,7 @@ int main(int argc, char *argv[])
             vkCmdBindDescriptorSets(commandBuffers[1], VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0u, 1, &descriptorSet, 0u, NULL);
             vkCmdBindPipeline(commandBuffers[1], VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
-            uint32_t repeatCount = correctness ? 1 : 10;
+            uint32_t repeatCount = correctness ? 1 : 100;
 
             for (uint32_t i = 0; i < repeatCount; ++i) {
                 vkCmdDispatch(commandBuffers[1], testCase.N / testCase.TILE_N, testCase.M / testCase.TILE_M, 1);
