@@ -131,7 +131,7 @@ using std::set;
 
 static void printUsage(const char *programName)
 {
-    printf("usage: %s [--correctness] [--device N] [--list-devices] [--dump-properties] [--dim=N] [--repeat=N] [--barrier=on|off] [--load-c=on|off] [--shmem]\n\n", programName);
+    printf("usage: %s [--correctness] [--device N] [--list-devices] [--dump-properties] [--dim=N] [--repeat=N] [--barrier=on|off] [--load-c=on|off] [--swizzle=N] [--shmem]\n\n", programName);
 }
 
 struct DeviceExtensionSupport
@@ -936,6 +936,7 @@ int main(int argc, char *argv[])
     bool loadC = true;
     bool shmemOnly = false;
     uint32_t requestedPhysicalDeviceIndex = 0;
+    uint32_t swizzleWidth = 16;
 
     printUsage(argc > 0 ? argv[0] : "vk_cooperative_matrix_perf");
 
@@ -996,6 +997,15 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "error: --load-c requires on or off\n");
                 return 1;
             }
+        } else if (strncmp(argv[arg], "--swizzle=", 10) == 0) {
+            const char *swizzleWidthArg = argv[arg] + 10;
+            char *end = NULL;
+            unsigned long parsedSwizzleWidth = strtoul(swizzleWidthArg, &end, 10);
+            if (end == swizzleWidthArg || *end != '\0' || swizzleWidthArg[0] == '-' || parsedSwizzleWidth > UINT32_MAX) {
+                fprintf(stderr, "error: --swizzle requires a non-negative integer\n");
+                return 1;
+            }
+            swizzleWidth = (uint32_t)parsedSwizzleWidth;
         } else if (strcmp(argv[arg], "--device") == 0) {
             if (++arg >= argc) {
                 fprintf(stderr, "error: --device requires an index\n");
@@ -1784,6 +1794,7 @@ int main(int argc, char *argv[])
                 testCase.N,
                 requiredSubgroupSize,
                 uint32_t(loadC),
+                swizzleWidth,
             };
 
 #if 0
@@ -1816,6 +1827,7 @@ int main(int argc, char *argv[])
                 {20, sizeof(uint32_t) * 20, sizeof(uint32_t)},
                 {21, sizeof(uint32_t) * 21, sizeof(uint32_t)},
                 {22, sizeof(uint32_t) * 22, sizeof(uint32_t)},
+                {23, sizeof(uint32_t) * 23, sizeof(uint32_t)},
             };
 
             VkSpecializationInfo specInfo =
@@ -1932,6 +1944,9 @@ int main(int argc, char *argv[])
             double tflops = (double)flops / (double)(elapsedUs / 1000000.0) / (1000.0*1000.0*1000.0*1000.0);
 
             printf("TILE_M=%d TILE_N=%d, TILE_K=%d BColMajor=%d workgroupSize=%d ", testCase.TILE_M, testCase.TILE_N, testCase.TILE_K, testCase.BColMajor, workgroupSize);
+            if (tt == TT_WORKGROUP) {
+                printf("swizzle=%u ", swizzleWidth);
+            }
             if (!correctness) {
                 printf("  %f TFlops\n", tflops);
             }
