@@ -131,7 +131,7 @@ using std::set;
 
 static void printUsage(const char *programName)
 {
-    printf("usage: %s [--correctness] [--device N] [--list-devices] [--dump-properties] [--dim=N] [--barrier=on|off] [--load-c=on|off] [--shmem]\n\n", programName);
+    printf("usage: %s [--correctness] [--device N] [--list-devices] [--dump-properties] [--dim=N] [--repeat=N] [--barrier=on|off] [--load-c=on|off] [--shmem]\n\n", programName);
 }
 
 struct DeviceExtensionSupport
@@ -920,7 +920,9 @@ int main(int argc, char *argv[])
     bool dumpProperties = false;
     bool hasRequestedPhysicalDevice = false;
     bool hasRequestedDim = false;
+    bool repeatSpecified = false;
     uint32_t requestedDim = 0;
+    uint32_t repeatCount = 100;
     bool barrierEnabled = true;
     bool loadC = true;
     bool shmemOnly = false;
@@ -945,6 +947,26 @@ int main(int argc, char *argv[])
                 return 1;
             }
             hasRequestedDim = true;
+        } else if (strcmp(argv[arg], "--repeat") == 0 || strncmp(argv[arg], "--repeat=", 9) == 0) {
+            const char *repeatArg = NULL;
+            if (strcmp(argv[arg], "--repeat") == 0) {
+                if (++arg >= argc) {
+                    fprintf(stderr, "error: --repeat requires a count\n");
+                    return 1;
+                }
+                repeatArg = argv[arg];
+            } else {
+                repeatArg = argv[arg] + 9;
+            }
+
+            char *end = NULL;
+            unsigned long repeat = strtoul(repeatArg, &end, 10);
+            if (end == repeatArg || *end != '\0' || repeat == 0 || repeat > UINT32_MAX) {
+                fprintf(stderr, "error: --repeat requires a non-zero 32-bit count\n");
+                return 1;
+            }
+            repeatCount = (uint32_t)repeat;
+            repeatSpecified = true;
         } else if (strncmp(argv[arg], "--barrier=", 10) == 0) {
             const char *barrierArg = argv[arg] + 10;
             if (strcmp(barrierArg, "on") == 0) {
@@ -984,6 +1006,9 @@ int main(int argc, char *argv[])
     }
 
     uint32_t defaultDim = hasRequestedDim ? requestedDim : (correctness ? 256 : 4096);
+    if (correctness && !repeatSpecified) {
+        repeatCount = 1;
+    }
     const uint32_t dimAlignment = 256;
     if ((defaultDim % dimAlignment) != 0) {
         uint32_t roundedDim = (defaultDim + dimAlignment - 1) / dimAlignment * dimAlignment;
@@ -1813,8 +1838,6 @@ int main(int argc, char *argv[])
 
             vkCmdBindDescriptorSets(commandBuffers[1], VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0u, 1, &descriptorSet, 0u, NULL);
             vkCmdBindPipeline(commandBuffers[1], VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-
-            uint32_t repeatCount = correctness ? 1 : 100;
 
             for (uint32_t i = 0; i < repeatCount; ++i) {
                 vkCmdDispatch(commandBuffers[1], testCase.N / testCase.TILE_N, testCase.M / testCase.TILE_M, 1);
