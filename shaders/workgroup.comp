@@ -57,6 +57,7 @@ layout(constant_id = 17)const uint B_NUM_ROWS = 1;
 layout(constant_id = 19) const uint M = 1;
 layout(constant_id = 20) const uint N = 1;
 layout(constant_id = 22) const bool LoadC = true;
+layout(constant_id = 23) const uint SwizzleWidth = 16;
 
 const int LayoutB = BColMajor ? gl_CooperativeMatrixLayoutColumnMajor : gl_CooperativeMatrixLayoutRowMajor;
 
@@ -74,10 +75,62 @@ layout(set=0, binding=0, std430) uniform Params { InputAV4 inputAV4; InputBV4 in
 
 layout(local_size_x_id = 18, local_size_y = 1, local_size_z = 1) in;
 
+// Rasterize the output grid in bands of N tiles. This makes a window of
+// concurrently resident workgroups cover a compact two-dimensional region,
+// increasing A/B input-tile reuse in L2. A group size of zero disables swizzling.
+// If the N grid fits in one band, this is exactly the original row-major
+// raster and takes the direct identity path.
+//
+// Example: gridN=10, gridM=8, SwizzleWidth=4. Each number is the linear ID
+// of the workgroup assigned to that output tile.
+//
+// Original row-major mapping:          Swizzled mapping:
+//
+//          N ->                              N ->
+// M   0  1  2  3  4  5  6  7  8  9    M   0  1  2  3 | 32 33 34 35 | 64 65
+// |  10 11 12 13 14 15 16 17 18 19    |   4  5  6  7 | 36 37 38 39 | 66 67
+// v  20 21 22 23 24 25 26 27 28 29    v   8  9 10 11 | 40 41 42 43 | 68 69
+//    30 31 32 33 34 35 36 37 38 39       12 13 14 15 | 44 45 46 47 | 70 71
+//    40 41 42 43 44 45 46 47 48 49       16 17 18 19 | 48 49 50 51 | 72 73
+//    50 51 52 53 54 55 56 57 58 59       20 21 22 23 | 52 53 54 55 | 74 75
+//    60 61 62 63 64 65 66 67 68 69       24 25 26 27 | 56 57 58 59 | 76 77
+//    70 71 72 73 74 75 76 77 78 79       28 29 30 31 | 60 61 62 63 | 78 79
+//                                             band 0     band 1       band 2
+//
+// Thus the first 32 launched workgroups fill the first 4x8 band instead of
+// spreading across the first three rows and part of the fourth row.
+uvec2 swizzleWorkgroup()
+{
+    if (SwizzleWidth == 0) {
+        return uvec2(gl_WorkGroupID.xy);
+    }
+
+    const uint gridN = gl_NumWorkGroups.x;
+    if (gridN <= SwizzleWidth) {
+        return uvec2(gl_WorkGroupID.xy);
+    }
+
+    const uint gridM = gl_NumWorkGroups.y;
+    const uint linearID = gl_WorkGroupID.y * gridN + gl_WorkGroupID.x;
+    const uint fullBandSize = SwizzleWidth * gridM;
+    const uint bandIndex = linearID / fullBandSize;
+    const uint bandStartN = bandIndex * SwizzleWidth;
+    const uint bandWidth = min(SwizzleWidth, gridN - bandStartN);
+
+    // Interpret the workgroup's index within the band as a row-major rectangle
+    // with gridM rows and bandWidth columns; N is the fastest-moving coordinate.
+    const uint indexWithinBand = linearID - bandIndex * fullBandSize;
+    const uint tileM = indexWithinBand / bandWidth;
+    const uint tileNWithinBand = indexWithinBand - tileM * bandWidth;
+    const uint tileN = bandStartN + tileNWithinBand;
+
+    return uvec2(tileN, tileM);
+}
+
 void main()
 {
     // compute position in grid
-    uvec2 tileID = uvec2(gl_WorkGroupID.xy);
+    uvec2 tileID = swizzleWorkgroup();
 
     InputAV4 inputAV4 = params.inputAV4;
     InputBV4 inputBV4 = params.inputBV4;
