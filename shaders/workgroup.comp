@@ -67,9 +67,9 @@ const int LayoutB = BColMajor ? gl_CooperativeMatrixLayoutColumnMajor : gl_Coope
 
 // input bindings for A/B/C and the output
 // bindings for A and B for uvec4/128-bit loads
-layout(buffer_reference) buffer InputAV4 { uvec4 x[]; } inputAV4;
-layout(buffer_reference) buffer InputBV4 { uvec4 x[]; } inputBV4;
-layout(buffer_reference) buffer InputC { C_TYPE x[]; } inputC;
+layout(buffer_reference) buffer InputAV4 { readonly uvec4 x[]; } inputAV4;
+layout(buffer_reference) buffer InputBV4 { readonly uvec4 x[]; } inputBV4;
+layout(buffer_reference) buffer InputC { readonly C_TYPE x[]; } inputC;
 layout(buffer_reference) buffer Output { C_TYPE x[]; } outputO;
 layout(set=0, binding=0, std430) uniform Params { InputAV4 inputAV4; InputBV4 inputBV4; InputC inputC; Output outputO; } params;
 
